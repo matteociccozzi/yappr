@@ -17,8 +17,23 @@ YAPPR_ROOT="${YAPPR_ROOT:-$HOME/toolkit/yappr}"
 CONFIG_DIR="$YAPPR_ROOT/configs"
 ACTIVE_LINK="$CONFIG_DIR/active.json"
 
+# ANSI colors — only when stdout is a TTY (so piped output stays clean)
+if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
+  C_RESET=$'\e[0m'
+  C_BOLD=$'\e[1m'
+  C_DIM=$'\e[2m'
+  C_RED=$'\e[31m'
+  C_GREEN=$'\e[32m'
+  C_YELLOW=$'\e[33m'
+  C_BLUE=$'\e[34m'
+  C_MAGENTA=$'\e[35m'
+  C_CYAN=$'\e[36m'
+else
+  C_RESET="" C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_MAGENTA="" C_CYAN=""
+fi
+
 die() {
-  echo "❌ $*" >&2
+  echo "${C_RED}❌${C_RESET} $*" >&2
   exit 1
 }
 
@@ -44,26 +59,33 @@ cmd_list() {
   ensure_dir
   local active
   active=$(active_name)
-  echo "Configs in $CONFIG_DIR:"
+  echo "${C_BOLD}${C_CYAN}🎙️  Configs in $CONFIG_DIR:${C_RESET}"
   echo
   local any=0
+  # palette for cycling colors across config rows (skipping the green used for active)
+  local palette=("$C_BLUE" "$C_MAGENTA" "$C_YELLOW" "$C_CYAN")
+  local idx=0
   for f in "$CONFIG_DIR"/*.json; do
     [[ -e "$f" ]] || continue
     local name
     name=$(basename "${f%.json}")
     [[ "$name" == "active" ]] && continue   # skip the symlink
     any=1
-    local marker="  "
-    [[ "$name" == "$active" ]] && marker="* "
     local desc
     desc=$(jq -r '.description // ""' "$f" 2>/dev/null)
-    printf "%s%-20s %s\n" "$marker" "$name" "$desc"
+    if [[ "$name" == "$active" ]]; then
+      printf "  ${C_GREEN}${C_BOLD}* %-20s${C_RESET} ${C_DIM}%s${C_RESET}\n" "$name" "$desc"
+    else
+      local color="${palette[$((idx % ${#palette[@]}))]}"
+      printf "    ${color}%-20s${C_RESET} ${C_DIM}%s${C_RESET}\n" "$name" "$desc"
+      idx=$((idx + 1))
+    fi
   done
   if [[ $any -eq 0 ]]; then
-    echo "  (no configs yet — drop a JSON file in $CONFIG_DIR)"
+    echo "  ${C_DIM}(no configs yet — drop a JSON file in $CONFIG_DIR)${C_RESET}"
   fi
   echo
-  echo "Active: $active"
+  echo "${C_BOLD}Active:${C_RESET} ${C_GREEN}${C_BOLD}${active}${C_RESET}"
 }
 
 cmd_active() {
@@ -86,9 +108,9 @@ cmd_use() {
 
   # Atomic symlink
   ln -sfn "${name}.json" "$ACTIVE_LINK"
-  echo "✓ active config is now: $name"
-  echo "  $target"
-  jq -r '.description // ""' "$target" | sed 's/^/  /'
+  echo "${C_GREEN}${C_BOLD}✓ active config is now: ${name}${C_RESET}"
+  echo "  ${C_DIM}${target}${C_RESET}"
+  jq -r '.description // ""' "$target" | sed "s/^/  ${C_DIM}/" | sed "s/$/${C_RESET}/"
 }
 
 cmd_show() {

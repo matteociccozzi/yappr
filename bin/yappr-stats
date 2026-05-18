@@ -21,6 +21,22 @@ from pathlib import Path
 
 METRICS_DIR = Path.home() / "toolkit" / "yappr" / "metrics"
 
+# ANSI colors — only when stdout is a TTY and NO_COLOR isn't set
+_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+def _c(code: str) -> str:
+    return code if _COLOR else ""
+RESET   = _c("\033[0m")
+BOLD    = _c("\033[1m")
+DIM     = _c("\033[2m")
+RED     = _c("\033[31m")
+GREEN   = _c("\033[32m")
+YELLOW  = _c("\033[33m")
+BLUE    = _c("\033[34m")
+MAGENTA = _c("\033[35m")
+CYAN    = _c("\033[36m")
+# Palette for cycling colors across metric rows (rainbow-ish)
+METRIC_PALETTE = [CYAN, BLUE, MAGENTA, YELLOW, GREEN] if _COLOR else [""] * 5
+
 # Metric keys present in stored JSONL records (others are derived)
 STORED_METRICS = [
     "stt_ms",
@@ -114,15 +130,15 @@ def enrich(records: list[dict]) -> list[dict]:
 def stats_line(vals: list[float], fmt: str) -> str:
     """Format mean/p50/p95/max from a list of numeric values."""
     if not vals:
-        return "(no data)"
+        return f"{DIM}(no data){RESET}"
     vals = sorted(vals)
     n = len(vals)
     p50 = vals[n // 2]
     p95 = vals[min(int(n * 0.95), n - 1)]
-    return (f"mean {fmt % statistics.mean(vals):<7s} "
-            f"p50 {fmt % p50:<7s} "
-            f"p95 {fmt % p95:<7s} "
-            f"max {fmt % max(vals)}")
+    return (f"{DIM}mean{RESET} {BOLD}{fmt % statistics.mean(vals):<7s}{RESET} "
+            f"{DIM}p50{RESET} {fmt % p50:<7s} "
+            f"{DIM}p95{RESET} {fmt % p95:<7s} "
+            f"{DIM}max{RESET} {fmt % max(vals)}")
 
 
 def _fmt_for(key: str) -> str:
@@ -133,13 +149,13 @@ def _fmt_for(key: str) -> str:
 
 def print_summary(records: list[dict], title: str = "") -> None:
     if not records:
-        print("(no records)")
+        print(f"{DIM}(no records){RESET}")
         return
     last_ts = records[-1].get("ts", "?")
-    header = f"{len(records)} runs (last: {last_ts})"
+    header_text = f"{len(records)} runs (last: {last_ts})"
     if title:
-        header = f"[{title}] {header}"
-    print(f"\n{header}")
+        header_text = f"[{title}] {header_text}"
+    print(f"\n{BOLD}{CYAN}📊 {header_text}{RESET}")
 
     # Config summary line — show when records share a single config_version
     versions = {r.get("config_version") for r in records if r.get("config_version")}
@@ -149,21 +165,24 @@ def print_summary(records: list[dict], title: str = "") -> None:
         model_str = next(iter(models)) if len(models) == 1 else "(mixed)"
         backends = {r.get("backend") for r in records if r.get("backend")}
         backend_str = next(iter(backends)) if len(backends) == 1 else "(mixed)"
-        print(f"  config: {v}  model: {model_str}  backend: {backend_str}")
+        print(f"  {DIM}config:{RESET} {GREEN}{v}{RESET}  "
+              f"{DIM}model:{RESET} {BLUE}{model_str}{RESET}  "
+              f"{DIM}backend:{RESET} {MAGENTA}{backend_str}{RESET}")
     elif versions:
-        print(f"  config: (mixed: {', '.join(sorted(versions))})")
+        print(f"  {DIM}config:{RESET} {YELLOW}(mixed: {', '.join(sorted(versions))}){RESET}")
     print()
 
-    for key in ALL_METRICS:
+    for i, key in enumerate(ALL_METRICS):
         vals = [r[key] for r in records if r.get(key) is not None]
-        print(f"  {key:<19s} {stats_line(vals, _fmt_for(key))}")
+        color = METRIC_PALETTE[i % len(METRIC_PALETTE)]
+        print(f"  {color}{key:<19s}{RESET} {stats_line(vals, _fmt_for(key))}")
 
 
 def print_histogram(vals: list[float], bins: int = 20, width: int = 50,
                     fmt: str = "%.0f") -> None:
     vals = [v for v in vals if v is not None]
     if not vals:
-        print("(no data)")
+        print(f"{DIM}(no data){RESET}")
         return
     lo, hi = min(vals), max(vals)
     if lo == hi:
@@ -175,30 +194,39 @@ def print_histogram(vals: list[float], bins: int = 20, width: int = 50,
         idx = min(int((v - lo) / (hi - lo) * bins), bins - 1)
         counts[idx] += 1
     maxc = max(counts)
+    palette = METRIC_PALETTE if _COLOR else [""] * 5
     for i, c in enumerate(counts):
         bar = "█" * int(c / maxc * width) if maxc else ""
+        color = palette[i % len(palette)]
         label = f"{fmt % edges[i]:>9s}"
-        print(f"  {label} | {bar} {c}")
-    print(f"  (n={len(vals)}, min={fmt % lo}, max={fmt % hi})")
+        print(f"  {DIM}{label}{RESET} {DIM}|{RESET} {color}{bar}{RESET} {BOLD}{c}{RESET}")
+    print(f"  {DIM}(n={len(vals)}, min={fmt % lo}, max={fmt % hi}){RESET}")
 
 
 def print_trend(vals: list[float], width: int = 60, height: int = 10,
                 fmt: str = "%.0f") -> None:
     vals = [v for v in vals if v is not None]
     if len(vals) < 2:
-        print("(not enough data for trend)")
+        print(f"{DIM}(not enough data for trend){RESET}")
         return
     vals = vals[-width:]
     lo, hi = min(vals), max(vals)
     if lo == hi:
         print(f"  all values = {fmt % lo}  (n={len(vals)})")
         return
+    palette = METRIC_PALETTE if _COLOR else [""] * 5
     for row in range(height, -1, -1):
         threshold = lo + (hi - lo) * (row / height)
-        line = "".join("█" if v >= threshold else " " for v in vals)
-        print(f"  {fmt % threshold:>9s} | {line}")
-    print(f"            +{'-' * len(vals)}")
-    print(f"             {len(vals)} most recent runs →")
+        # Color the row by height — top rows are warm/red, bottom rows are cool/green
+        # so high values "warn" and low values "look fine"
+        if _COLOR:
+            color = palette[(height - row) % len(palette)]
+        else:
+            color = ""
+        line = "".join(f"{color}█{RESET}" if v >= threshold else " " for v in vals)
+        print(f"  {DIM}{fmt % threshold:>9s} |{RESET} {line}")
+    print(f"            {DIM}+{'-' * len(vals)}{RESET}")
+    print(f"             {DIM}{len(vals)} most recent runs →{RESET}")
 
 
 # ---------- main -------------------------------------------------------------

@@ -397,18 +397,27 @@ fi
 # In non-quiet mode, append timings to stderr so the user sees them without
 # polluting the stdout text stream.
 if [[ "$YAPPR_QUIET" != "1" ]]; then
+  # ANSI colors only when stderr is a TTY and NO_COLOR isn't set
+  if [[ -t 2 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
+    R_RESET=$'\e[0m'; R_BOLD=$'\e[1m'; R_DIM=$'\e[2m'
+    R_RED=$'\e[31m'; R_GREEN=$'\e[32m'; R_YELLOW=$'\e[33m'
+    R_BLUE=$'\e[34m'; R_MAGENTA=$'\e[35m'; R_CYAN=$'\e[36m'
+  else
+    R_RESET="" R_BOLD="" R_DIM="" R_RED="" R_GREEN="" R_YELLOW="" R_BLUE="" R_MAGENTA="" R_CYAN=""
+  fi
   {
     echo
-    echo "─────────────────────────────────────"
-    echo "RAW (from STT): $RAW"
-    echo "─────────────────────────────────────"
-    printf "⏱  Record:  %5d ms (%s of audio)\n" "$REC_MS" "$(echo "scale=2; $REC_MS/1000" | bc)s"
-    printf "⏱  Resample:%5d ms\n" "$RS_MS"
-    printf "⏱  STT:     %5d ms\n" "$STT_MS"
-    printf "⏱  LLM TTFT:%5d ms\n" "$LLM_TTFT_MS"
-    printf "⏱  Cleanup: %5d ms\n" "$LLM_MS"
-    printf "⏱  Total (post-stop): %d ms\n" "$TOTAL_MS"
-    echo "    Audio:    $AUDIO"
-    echo "    Log:      $LOG_FILE"
+    echo "${R_DIM}─────────────────────────────────────${R_RESET}"
+    echo "${R_DIM}RAW (from STT):${R_RESET} ${R_BOLD}${RAW}${R_RESET}"
+    echo "${R_DIM}─────────────────────────────────────${R_RESET}"
+    printf "${R_CYAN}⏱  Record:${R_RESET}    ${R_BOLD}%5d ms${R_RESET}  ${R_DIM}(%s of audio)${R_RESET}\n" \
+           "$REC_MS" "$(echo "scale=2; $REC_MS/1000" | bc)s"
+    printf "${R_BLUE}⏱  Resample:${R_RESET}  ${R_BOLD}%5d ms${R_RESET}\n" "$RS_MS"
+    printf "${R_MAGENTA}⏱  STT:${R_RESET}       ${R_BOLD}%5d ms${R_RESET}\n" "$STT_MS"
+    printf "${R_YELLOW}⏱  LLM TTFT:${R_RESET}  ${R_BOLD}%5d ms${R_RESET}\n" "$LLM_TTFT_MS"
+    printf "${R_GREEN}⏱  Cleanup:${R_RESET}   ${R_BOLD}%5d ms${R_RESET}\n" "$LLM_MS"
+    printf "${R_BOLD}⏱  Total (post-stop):${R_RESET} ${R_BOLD}%d ms${R_RESET}\n" "$TOTAL_MS"
+    echo "    ${R_DIM}Audio:${R_RESET}    $AUDIO"
+    echo "    ${R_DIM}Log:${R_RESET}      $LOG_FILE"
   } >&2
 fi
