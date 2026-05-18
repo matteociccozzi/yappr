@@ -1,0 +1,15 @@
+{
+  "version": "default",
+  "description": "Default baseline: Qwen3-1.7B-4bit via custom yappr-mlx-server with explicit prefix caching (port 8081).",
+  "backend": "yappr-mlx-server",
+  "llm": {
+    "url": "http://127.0.0.1:8081/v1/chat/completions",
+    "model_name": "mlx-community/Qwen3-1.7B-4bit",
+    "max_tokens": 512,
+    "temperature": 0,
+    "extra_params": {
+      "chat_template_kwargs": {"enable_thinking": false}
+    }
+  },
+  "prompt_file": "prompts/cleanup.txt"
+}

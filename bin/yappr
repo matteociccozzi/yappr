@@ -1,8 +1,118 @@
 #!/usr/bin/env bash
-# yappr — local dictation pipeline: record -> STT (Parakeet) -> cleanup (local Qwen) -> stdout
 #
-# Stage-2 CLI prototype with verbose logging.
-# Press ENTER to stop recording (not Ctrl-C).
+# yappr — local voice dictation pipeline orchestrator.
+#
+# WHAT IT DOES
+# ------------
+# Runs one full dictation cycle end-to-end:
+#   audio in  →  STT (Parakeet via FluidAudio)  →  cleanup (Qwen via yappr-llm-call)
+#             →  streamed text out  →  per-run JSONL metric appended.
+#
+# ROLE IN THE STACK
+# -----------------
+# This is the entry point Hammerspoon invokes when the user releases the
+# Ctrl+Option+Y hotkey. Hammerspoon records audio with ffmpeg and hands the
+# wav file off via YAPPR_AUDIO_FILE; yappr does everything after that.
+# Cleaned text streams on STDOUT chunk-by-chunk; Hammerspoon's streamCallback
+# types each chunk at the cursor as it arrives.
+#
+# It can also be invoked from the terminal directly — without YAPPR_AUDIO_FILE
+# it records from the mic via sox, with no hotkey involved.
+#
+# PIPELINE STAGES (in order)
+# --------------------------
+#   1. PRE-FLIGHT
+#      - Load active config from $YAPPR_CONFIG (default: configs/active.json).
+#      - Read llm.url, model_name, max_tokens, temperature, extra_params,
+#        version, hash.
+#      - Hash the prompt file too (independent of config hash) so metric
+#        records can distinguish prompt edits from config edits.
+#      - Verify FluidAudio binary exists and llama-style endpoint is responding.
+#
+#   2. RECORDING (or skipped if YAPPR_AUDIO_FILE is set)
+#      - Use sox + CoreAudio device named "MacBook Pro Microphone" (override
+#        via YAPPR_COREAUDIO_DEVICE).
+#      - Fixed duration via YAPPR_RECORD_SECS (default 10) — sox's signal
+#        handling on macOS is unreliable, so we don't use VAD/SIGINT stops here.
+#      - In Hammerspoon mode, ffmpeg handles the recording externally; this
+#        block is skipped and YAPPR_AUDIO_FILE points at the resulting wav.
+#
+#   3. STT (Parakeet via FluidAudio)
+#      - Invokes the compiled fluidaudiocli binary with --model-version v2
+#        (English-only Parakeet) and --language en.
+#      - Reads the resulting .json file, extracts .text → $RAW.
+#
+#   4. LLM CLEANUP (streaming via yappr-llm-call)
+#      - Builds the chat-completions body using the loaded config's params,
+#        merges extra_params (e.g. chat_template_kwargs.enable_thinking=false).
+#      - Pipes the request JSON into yappr-llm-call. Its STDOUT (the cleaned
+#        text, streamed) flows straight through to OUR stdout — no buffering.
+#      - Its STDERR is captured to a temp file; the LAST line is the metric
+#        JSON (text, ttft_ms, total_ms, prompt/completion tokens).
+#
+#   5. METRICS EMIT (synchronous JSONL append)
+#      - Composes one line per run including: timestamp, llm_url, config_version,
+#        config_hash, backend, model_name, prompt_hash, stt_ms, llm_ttft_ms,
+#        llm_total_ms, prompt_tokens, completion_tokens, audio_seconds,
+#        raw_chars, cleaned_chars.
+#      - Appends to metrics/<YYYY-MM>.jsonl.
+#      - Synchronous because the cost (~5-10 ms) is invisible relative to the
+#        operation being measured.
+#
+#   6. REPORT (non-quiet mode only)
+#      - Pretty-printed timings + audio path + log path go to STDERR so the
+#        STDOUT text stream stays clean.
+#
+# OUTPUT DISCIPLINE
+# -----------------
+# STDOUT = cleaned text, streamed as it arrives.
+# STDERR = diagnostics / log / per-stage report.
+# Logs   = per-run files in logs/<timestamp>.log (also receives DEBUG-level logs).
+# Metrics = metrics/<YYYY-MM>.jsonl (one JSON line per run).
+# Both files use the same <timestamp> prefix so they correlate trivially.
+#
+# ENV VAR CONTROLS (call-time)
+# ----------------------------
+#   YAPPR_CONFIG            Path to active config (default: configs/active.json).
+#   YAPPR_AUDIO_FILE        Use this existing wav instead of recording.
+#                           Set by Hammerspoon, which captures with ffmpeg.
+#   YAPPR_RECORD_SECS       Fixed recording duration in interactive mode (default 10).
+#   YAPPR_COREAUDIO_DEVICE  CoreAudio input device name (default "MacBook Pro Microphone").
+#   YAPPR_QUIET             "1" = stdout is JUST the streamed text, no report.
+#                           Hammerspoon sets this.
+#   YAPPR_COPY              "1" = also pbcopy the cleaned text to the clipboard.
+#                           Independent of streaming; useful for "save to clipboard" CLI use.
+#   YAPPR_DEBUG             "1" (default) = verbose log lines to the log file.
+#   YAPPR_LLM_URL           Legacy override — config's llm.url wins now.
+#
+# EXIT CODES
+# ----------
+#   0  on success.
+#   1  on any stage failure (mic empty, STT no JSON, LLM error, etc.).
+#      Detailed reason goes to STDERR + the log file.
+#
+# ASSUMPTIONS / LIMITATIONS
+# -------------------------
+# * Requires jq, sox, python3, FluidAudio binary, and the LLM server configured
+#   in active.json to be reachable.
+# * Single-shot per invocation. No persistent state, no sessions — every run
+#   is independent. (The LLM server may cache prefix state, but that's its
+#   concern, not yappr's.)
+# * Audio capture is fixed-duration on macOS because sox's signal-handling
+#   under CoreAudio is broken — we tried push-to-talk and SIGINT, both fail.
+#   Hammerspoon uses ffmpeg which DOES handle SIGTERM cleanly, and is the
+#   intended production path.
+# * Set -e is deliberately OFF (only -uo pipefail). A soft failure in one
+#   stage still produces logs we can read, instead of vanishing silently.
+#
+# EXAMPLE
+# -------
+#   # Hammerspoon mode (recording done externally):
+#   YAPPR_QUIET=1 YAPPR_AUDIO_FILE=/tmp/foo.wav yappr
+#
+#   # Interactive mode (records via sox, prints report to stderr):
+#   YAPPR_RECORD_SECS=8 yappr
+#
 
 set -uo pipefail   # NB: no -e — we want to keep running even if a stage soft-fails so we can see logs
 
@@ -198,39 +308,46 @@ BODY=$(jq -n \
       {role: "user",   content: $raw}
     ],
     max_tokens: $max_tokens,
-    temperature: $temperature,
-    stream: false
+    temperature: $temperature
   } + $extras')
 
-RESP_FILE="/tmp/yappr-resp-$$.json"
-HTTP_TIMINGS=$(curl -s -o "$RESP_FILE" \
-  -w "%{time_starttransfer} %{time_total}\n" \
-  --max-time 60 "$LLM_URL" \
-  -H "Content-Type: application/json" \
-  -d "$BODY")
-CURL_RC=$?
-LLM_TTFT_MS=$(echo "$HTTP_TIMINGS" | awk '{printf "%d", $1*1000}')
-LLM_MS=$(echo     "$HTTP_TIMINGS" | awk '{printf "%d", $2*1000}')
-RESPONSE=$(cat "$RESP_FILE" 2>/dev/null || echo "")
-rm -f "$RESP_FILE"
+# Streaming LLM call via the Python helper:
+#  - stdout: cleaned text streams through to OUR stdout (consumer can type/display live)
+#  - stderr: last line is a JSON metric blob (timing, tokens, full text) — captured below
+LLM_INPUT=$(jq -n --arg url "$LLM_URL" --argjson body "$BODY" '{url:$url, body:$body, timeout:60}')
+LLM_STDERR_FILE=$(mktemp -t yappr-llm-stderr.XXXXXX)
+echo "$LLM_INPUT" | "$YAPPR_ROOT/bin/yappr-llm-call" 2>"$LLM_STDERR_FILE"
+LLM_RC=$?
 
-log "curl exit: $CURL_RC"
+# The metric JSON is the LAST stderr line; any preceding stderr goes to the log
+LLM_METRIC=$(tail -1 "$LLM_STDERR_FILE")
+head -n -1 "$LLM_STDERR_FILE" >> "$LOG_FILE" 2>/dev/null || true
+rm -f "$LLM_STDERR_FILE"
+
+LLM_ERR=$(echo "$LLM_METRIC" | jq -r '.error // empty' 2>/dev/null)
+LLM_TTFT_MS=$(echo "$LLM_METRIC" | jq -r '.ttft_ms // 0' 2>/dev/null)
+LLM_MS=$(echo     "$LLM_METRIC" | jq -r '.total_ms // 0' 2>/dev/null)
+CLEANED=$(echo    "$LLM_METRIC" | jq -r '.text // empty' 2>/dev/null)
+PROMPT_TOK=$(echo "$LLM_METRIC" | jq -r '.prompt_tokens // 0' 2>/dev/null)
+COMPLETION_TOK=$(echo "$LLM_METRIC" | jq -r '.completion_tokens // 0' 2>/dev/null)
+
+log "LLM helper exit: $LLM_RC"
 log "TTFT: ${LLM_TTFT_MS}ms"
 log "Cleanup time: ${LLM_MS}ms"
+log "Tokens: prompt=$PROMPT_TOK completion=$COMPLETION_TOK"
 
-if [[ $CURL_RC -ne 0 ]]; then
-  log "❌ Request to LLM failed"
+if [[ $LLM_RC -ne 0 ]] || [[ -n "$LLM_ERR" ]]; then
+  log "❌ LLM call failed: ${LLM_ERR:-rc=$LLM_RC}"
   exit 1
 fi
 
-CLEANED=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
 if [[ -z "$CLEANED" ]]; then
-  log "❌ LLM response missing content. Full response:"
-  echo "$RESPONSE" >&2
+  log "❌ LLM produced empty text. Last stderr line:"
+  echo "$LLM_METRIC" >&2
   exit 1
 fi
 
-USAGE=$(echo "$RESPONSE" | jq -c '.usage // {}' 2>/dev/null)
+USAGE="{\"prompt_tokens\":$PROMPT_TOK,\"completion_tokens\":$COMPLETION_TOK}"
 log "Token usage: $USAGE"
 
 # ---------- metrics (synchronous JSONL append) ----------
@@ -238,10 +355,7 @@ METRIC_FILE="$YAPPR_ROOT/metrics/$(date +%Y-%m).jsonl"
 mkdir -p "$(dirname "$METRIC_FILE")"
 AUDIO_SECONDS=$(sox --i -D "$AUDIO" 2>/dev/null | head -1 || echo 0)
 [[ -z "$AUDIO_SECONDS" ]] && AUDIO_SECONDS=0
-PROMPT_TOK=$(echo "$RESPONSE" | jq -r '.usage.prompt_tokens // 0' 2>/dev/null)
-COMPLETION_TOK=$(echo "$RESPONSE" | jq -r '.usage.completion_tokens // 0' 2>/dev/null)
-[[ -z "$PROMPT_TOK" ]] && PROMPT_TOK=0
-[[ -z "$COMPLETION_TOK" ]] && COMPLETION_TOK=0
+# PROMPT_TOK / COMPLETION_TOK already set by yappr-llm-call helper above
 
 jq -nc \
   --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -279,23 +393,22 @@ if [[ "$YAPPR_COPY" == "1" ]]; then
   log "Copied to clipboard."
 fi
 
-if [[ "$YAPPR_QUIET" == "1" ]]; then
-  # Hotkey / scripting mode: emit ONLY the cleaned text on stdout.
-  printf "%s" "$CLEANED"
-else
-  stage "RESULT"
-  echo
-  echo "─────────────────────────────────────"
-  echo "RAW:     $RAW"
-  echo "─────────────────────────────────────"
-  echo "CLEANED: $CLEANED"
-  echo "─────────────────────────────────────"
-  printf "⏱  Record:  %5d ms (%s of audio)\n" "$REC_MS" "$(echo "scale=2; $REC_MS/1000" | bc)s"
-  printf "⏱  Resample:%5d ms\n" "$RS_MS"
-  printf "⏱  STT:     %5d ms\n" "$STT_MS"
-  printf "⏱  LLM TTFT:%5d ms\n" "$LLM_TTFT_MS"
-  printf "⏱  Cleanup: %5d ms\n" "$LLM_MS"
-  printf "⏱  Total (post-stop): %d ms\n" "$TOTAL_MS"
-  echo "    Audio:    $AUDIO"
-  echo "    Log:      $LOG_FILE"
+# Cleaned text was already streamed to stdout chunk-by-chunk during the LLM call.
+# In non-quiet mode, append timings to stderr so the user sees them without
+# polluting the stdout text stream.
+if [[ "$YAPPR_QUIET" != "1" ]]; then
+  {
+    echo
+    echo "─────────────────────────────────────"
+    echo "RAW (from STT): $RAW"
+    echo "─────────────────────────────────────"
+    printf "⏱  Record:  %5d ms (%s of audio)\n" "$REC_MS" "$(echo "scale=2; $REC_MS/1000" | bc)s"
+    printf "⏱  Resample:%5d ms\n" "$RS_MS"
+    printf "⏱  STT:     %5d ms\n" "$STT_MS"
+    printf "⏱  LLM TTFT:%5d ms\n" "$LLM_TTFT_MS"
+    printf "⏱  Cleanup: %5d ms\n" "$LLM_MS"
+    printf "⏱  Total (post-stop): %d ms\n" "$TOTAL_MS"
+    echo "    Audio:    $AUDIO"
+    echo "    Log:      $LOG_FILE"
+  } >&2
 fi

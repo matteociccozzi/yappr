@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""
+yappr-llm-call — make one streaming chat-completion call to an OpenAI-compatible
+LLM server, measure real time-to-first-token, and emit the cleaned text plus a
+structured metric blob.
+
+ROLE IN THE YAPPR PIPELINE
+--------------------------
+This is the HTTP-layer specialist that the `yappr` orchestrator (bash) invokes
+to handle a single cleanup request. It exists as a separate Python script
+because:
+
+  1. Bash + curl + awk cannot cleanly stream Server-Sent Events while also
+     stamping a wall-clock timestamp on the FIRST content chunk. We need that
+     timestamp to compute true TTFT (time-to-first-token).
+  2. With `stream: false`, curl's --write-out time_starttransfer measures when
+     the server delivers the *complete* response — that is NOT TTFT. So we MUST
+     stream and read chunks progressively to get an honest measurement.
+  3. The same helper is reused by `yappr-probe-caching` (the A/B cache probe)
+     so the HTTP/SSE logic lives in exactly one place.
+
+I/O CONTRACT
+------------
+Input: a JSON object on stdin.
+
+    {
+      "url":     "http://127.0.0.1:8081/v1/chat/completions",  // required
+      "body":    {                                              // required
+        "messages":    [{"role": "system", ...}, {"role": "user", ...}],
+        "max_tokens":  512,
+        "temperature": 0,
+        // ... any other OpenAI-style fields the server accepts.
+        // "stream" is always forced to true by this helper.
+      },
+      "timeout": 60                                             // optional, sec
+    }
+
+Output: split across stdout and stderr by design.
+
+  STDOUT  — the cleaned text content from `choices[0].delta.content`, written
+            chunk-by-chunk and flushed immediately as each SSE event arrives.
+            A downstream consumer can pipe stdout into a UI (Hammerspoon types
+            it at the cursor; a CLI just shows it streaming in the terminal).
+
+  STDERR  — diagnostic lines while running (none currently), THEN a single
+            final line with the structured metric blob:
+
+              {
+                "text":              "<full accumulated cleaned text>",
+                "ttft_ms":           87,    // wall-clock from request sent
+                                            //   to first content chunk arrival
+                "total_ms":          246,   // wall-clock until stream closed
+                "prompt_tokens":     363,   // 0 if server omits usage in stream
+                "completion_tokens": 13,    // 0 if server omits usage in stream
+                "error":             null   // string when something failed
+              }
+
+Callers that want both the streamed UX and the post-hoc metrics:
+  1. Read stdout incrementally (pipe / streamCallback) to feed the UI.
+  2. Capture stderr to a tempfile and read its LAST line as JSON for metrics.
+
+EXIT CODES
+----------
+  0  on success (error field is null in the stderr JSON)
+  2  on any failure (error field contains a description); stdout may contain
+     partial text up to the point of failure
+
+ASSUMPTIONS / LIMITATIONS
+-------------------------
+  * Server must speak the OpenAI streaming chat-completions format with
+    Server-Sent Events (`data: {...}` lines, terminated by `data: [DONE]`).
+  * If the server omits `usage` in stream chunks (e.g. stock mlx_lm.server in
+    some versions), prompt_tokens / completion_tokens come back as 0. The
+    helper does not estimate them from text length.
+  * stream: true is forced regardless of what the caller put in body. This is
+    by design — the whole point of this helper is to measure TTFT, which is
+    only meaningful with streaming responses.
+  * Only one choice (choices[0]) is processed. Multi-choice responses are not
+    supported (they don't make sense for our single-user cleanup use case).
+
+EXAMPLE
+-------
+    jq -n '{
+      url:  "http://127.0.0.1:8081/v1/chat/completions",
+      body: {
+        messages: [
+          {role: "system", content: "Clean up dictation, reply with only cleaned text."},
+          {role: "user",   content: "um so like the deployment is tomorrow"}
+        ],
+        max_tokens:  64,
+        temperature: 0,
+        chat_template_kwargs: {enable_thinking: false}
+      }
+    }' | yappr-llm-call 2>/tmp/metric.json
+
+    # stdout now contains: The deployment is tomorrow.
+    # stderr last line in /tmp/metric.json has the metric JSON.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import time
+import urllib.error
+import urllib.request
+
+
+def main() -> int:
+    try:
+        req_data = json.load(sys.stdin)
+    except json.JSONDecodeError as e:
+        json.dump({"error": f"invalid input json: {e}", "text": "",
+                   "ttft_ms": 0, "total_ms": 0,
+                   "prompt_tokens": 0, "completion_tokens": 0}, sys.stdout)
+        return 2
+
+    url = req_data.get("url")
+    body = dict(req_data.get("body") or {})
+    timeout = req_data.get("timeout", 60)
+
+    if not url:
+        json.dump({"error": "missing 'url'", "text": "",
+                   "ttft_ms": 0, "total_ms": 0,
+                   "prompt_tokens": 0, "completion_tokens": 0}, sys.stdout)
+        return 2
+
+    # Force streaming regardless of what was passed
+    body["stream"] = True
+
+    payload = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        },
+        method="POST",
+    )
+
+    text_parts: list[str] = []
+    ttft_ms: int | None = None
+    prompt_tokens = 0
+    completion_tokens = 0
+    error: str | None = None
+
+    t0 = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            for raw in resp:
+                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                if not line.startswith("data:"):
+                    continue
+                payload_str = line[5:].lstrip()
+                if payload_str == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(payload_str)
+                except json.JSONDecodeError:
+                    continue
+
+                choices = chunk.get("choices") or []
+                if choices:
+                    delta = choices[0].get("delta") or {}
+                    content = delta.get("content")
+                    if content:
+                        if ttft_ms is None:
+                            ttft_ms = int((time.monotonic() - t0) * 1000)
+                        text_parts.append(content)
+                        # Stream text out as it arrives
+                        sys.stdout.write(content)
+                        sys.stdout.flush()
+
+                usage = chunk.get("usage")
+                if usage:
+                    prompt_tokens = int(usage.get("prompt_tokens", prompt_tokens) or 0)
+                    completion_tokens = int(usage.get("completion_tokens", completion_tokens) or 0)
+    except urllib.error.HTTPError as e:
+        error = f"http {e.code}: {e.read().decode('utf-8', errors='replace')[:500]}"
+    except urllib.error.URLError as e:
+        error = f"url error: {e.reason}"
+    except TimeoutError:
+        error = f"timeout after {timeout}s"
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+
+    total_ms = int((time.monotonic() - t0) * 1000)
+
+    # Final metric line on stderr — downstream consumer reads the LAST stderr line.
+    json.dump({
+        "text": "".join(text_parts),
+        "ttft_ms": ttft_ms if ttft_ms is not None else total_ms,
+        "total_ms": total_ms,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "error": error,
+    }, sys.stderr)
+    sys.stderr.write("\n")
+    sys.stderr.flush()
+    return 0 if error is None else 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
