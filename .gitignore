@@ -1,0 +1,15 @@
+# yappr-generated runtime data
+recordings/
+logs/
+metrics/
+metrics.bak.*/
+
+# FluidAudio is a vendored dependency, not part of this repo. To set up:
+#   git clone https://github.com/FluidInference/FluidAudio.git vendor/FluidAudio
+#   cd vendor/FluidAudio && swift build -c release
+vendor/FluidAudio/
+
+# Temp / scratch
+*.tmp
+*.bak
+.DS_Store

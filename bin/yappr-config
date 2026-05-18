@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# yappr-config — manage versioned cleanup configs for yappr.
+#
+# Usage:
+#   yappr-config list                  Show all configs, mark the active one
+#   yappr-config active                Print the active config name
+#   yappr-config use <NAME>            Switch active config (atomic symlink)
+#   yappr-config show [<NAME>]         Pretty-print a config (defaults to active)
+#   yappr-config diff <A> <B>          Show normalized diff between two configs
+#   yappr-config path                  Print configs directory path
+#
+# Configs live at $YAPPR_ROOT/configs/*.json (default ~/toolkit/yappr/configs).
+
+set -uo pipefail
+
+YAPPR_ROOT="${YAPPR_ROOT:-$HOME/toolkit/yappr}"
+CONFIG_DIR="$YAPPR_ROOT/configs"
+ACTIVE_LINK="$CONFIG_DIR/active.json"
+
+die() {
+  echo "❌ $*" >&2
+  exit 1
+}
+
+ensure_dir() {
+  [[ -d "$CONFIG_DIR" ]] || die "configs directory not found at $CONFIG_DIR"
+}
+
+active_name() {
+  # Returns the basename (without .json) of whatever active.json points to,
+  # or "(none)" if no active link.
+  if [[ -L "$ACTIVE_LINK" ]]; then
+    local target
+    target=$(readlink "$ACTIVE_LINK")
+    basename "${target%.json}"
+  elif [[ -f "$ACTIVE_LINK" ]]; then
+    echo "(not a symlink: $ACTIVE_LINK)"
+  else
+    echo "(none)"
+  fi
+}
+
+cmd_list() {
+  ensure_dir
+  local active
+  active=$(active_name)
+  echo "Configs in $CONFIG_DIR:"
+  echo
+  local any=0
+  for f in "$CONFIG_DIR"/*.json; do
+    [[ -e "$f" ]] || continue
+    local name
+    name=$(basename "${f%.json}")
+    [[ "$name" == "active" ]] && continue   # skip the symlink
+    any=1
+    local marker="  "
+    [[ "$name" == "$active" ]] && marker="* "
+    local desc
+    desc=$(jq -r '.description // ""' "$f" 2>/dev/null)
+    printf "%s%-20s %s\n" "$marker" "$name" "$desc"
+  done
+  if [[ $any -eq 0 ]]; then
+    echo "  (no configs yet — drop a JSON file in $CONFIG_DIR)"
+  fi
+  echo
+  echo "Active: $active"
+}
+
+cmd_active() {
+  ensure_dir
+  active_name
+}
+
+cmd_use() {
+  ensure_dir
+  local name="${1:-}"
+  [[ -n "$name" ]] || die "usage: yappr-config use <NAME>"
+  local target="$CONFIG_DIR/${name}.json"
+  [[ -f "$target" ]] || die "config not found: $target"
+
+  # Validate before activating
+  jq empty "$target" 2>/dev/null || die "config is not valid JSON: $target"
+  local got_url
+  got_url=$(jq -r '.llm.url // ""' "$target")
+  [[ -n "$got_url" ]] || die "config missing .llm.url: $target"
+
+  # Atomic symlink
+  ln -sfn "${name}.json" "$ACTIVE_LINK"
+  echo "✓ active config is now: $name"
+  echo "  $target"
+  jq -r '.description // ""' "$target" | sed 's/^/  /'
+}
+
+cmd_show() {
+  ensure_dir
+  local name="${1:-}"
+  local target
+  if [[ -z "$name" ]]; then
+    target="$ACTIVE_LINK"
+    [[ -e "$target" ]] || die "no active config (run: yappr-config list)"
+  else
+    target="$CONFIG_DIR/${name}.json"
+    [[ -f "$target" ]] || die "config not found: $target"
+  fi
+  jq . "$target"
+}
+
+cmd_diff() {
+  ensure_dir
+  local a="${1:-}"
+  local b="${2:-}"
+  [[ -n "$a" && -n "$b" ]] || die "usage: yappr-config diff <A> <B>"
+  local af="$CONFIG_DIR/${a}.json"
+  local bf="$CONFIG_DIR/${b}.json"
+  [[ -f "$af" ]] || die "config not found: $af"
+  [[ -f "$bf" ]] || die "config not found: $bf"
+  diff -u <(jq -S . "$af") <(jq -S . "$bf") || true
+}
+
+cmd_path() {
+  echo "$CONFIG_DIR"
+}
+
+usage() {
+  sed -n '2,16p' "$0" | sed 's/^# \?//'
+}
+
+main() {
+  local cmd="${1:-}"
+  shift || true
+  case "$cmd" in
+    list)    cmd_list ;;
+    active)  cmd_active ;;
+    use)     cmd_use "$@" ;;
+    show)    cmd_show "$@" ;;
+    diff)    cmd_diff "$@" ;;
+    path)    cmd_path ;;
+    ""|-h|--help|help) usage ;;
+    *)       die "unknown command: $cmd (try: yappr-config help)" ;;
+  esac
+}
+
+main "$@"

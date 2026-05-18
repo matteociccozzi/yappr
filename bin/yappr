@@ -1,0 +1,301 @@
+#!/usr/bin/env bash
+# yappr — local dictation pipeline: record -> STT (Parakeet) -> cleanup (local Qwen) -> stdout
+#
+# Stage-2 CLI prototype with verbose logging.
+# Press ENTER to stop recording (not Ctrl-C).
+
+set -uo pipefail   # NB: no -e — we want to keep running even if a stage soft-fails so we can see logs
+
+YAPPR_ROOT="${YAPPR_ROOT:-$HOME/toolkit/yappr}"
+FLUIDAUDIO_DIR="$YAPPR_ROOT/vendor/FluidAudio"
+FLUIDAUDIO_BIN="$FLUIDAUDIO_DIR/.build/arm64-apple-macosx/release/fluidaudiocli"
+RECORDINGS_DIR="$YAPPR_ROOT/recordings"
+LOGS_DIR="$YAPPR_ROOT/logs"
+YAPPR_CONFIG="${YAPPR_CONFIG:-$YAPPR_ROOT/configs/active.json}"
+YAPPR_DEBUG="${YAPPR_DEBUG:-1}"
+YAPPR_QUIET="${YAPPR_QUIET:-0}"   # 1 = only print cleaned text to stdout, all logs to file
+YAPPR_COPY="${YAPPR_COPY:-0}"     # 1 = also copy cleaned text to clipboard (pbcopy)
+
+# Load active cleanup config — all LLM-call params come from here
+if [[ ! -f "$YAPPR_CONFIG" ]]; then
+  echo "❌ No yappr config at $YAPPR_CONFIG. Run: yappr-config list" >&2
+  exit 1
+fi
+LLM_URL=$(jq -r '.llm.url' "$YAPPR_CONFIG")
+MODEL_NAME=$(jq -r '.llm.model_name // ""' "$YAPPR_CONFIG")
+BACKEND=$(jq -r '.backend // "unknown"' "$YAPPR_CONFIG")
+MAX_TOKENS=$(jq -r '.llm.max_tokens // 512' "$YAPPR_CONFIG")
+TEMPERATURE=$(jq -r '.llm.temperature // 0' "$YAPPR_CONFIG")
+EXTRA_PARAMS=$(jq -c '.llm.extra_params // {}' "$YAPPR_CONFIG")
+CONFIG_VERSION=$(jq -r '.version' "$YAPPR_CONFIG")
+CONFIG_HASH=$(jq -cS . "$YAPPR_CONFIG" | shasum -a 256 | awk '{print substr($1,1,12)}')
+
+PROMPT_FILE="$YAPPR_ROOT/$(jq -r '.prompt_file' "$YAPPR_CONFIG")"
+PROMPT_HASH=$(shasum -a 256 "$PROMPT_FILE" 2>/dev/null | awk '{print substr($1,1,12)}')
+
+mkdir -p "$RECORDINGS_DIR" "$LOGS_DIR"
+
+STAMP=$(date +%Y%m%d-%H%M%S)
+AUDIO="$RECORDINGS_DIR/${STAMP}.wav"
+AUDIO_RAW="$RECORDINGS_DIR/${STAMP}.raw.wav"
+JSON_OUT="$RECORDINGS_DIR/${STAMP}.json"
+LOG_FILE="$LOGS_DIR/${STAMP}.log"
+
+# ---------- helpers ----------
+now_ms() { python3 -c 'import time; print(int(time.time()*1000))'; }
+now_str() { python3 -c 'import time; t=time.time(); print(time.strftime("%H:%M:%S",time.localtime(t))+".%03d"%int((t-int(t))*1000))'; }
+
+log() {
+  local msg="[$(now_str)] $*"
+  if [[ "$YAPPR_QUIET" == "1" ]]; then
+    echo "$msg" >> "$LOG_FILE"
+  else
+    echo "$msg" | tee -a "$LOG_FILE" >&2
+  fi
+}
+
+# Stop a background process cleanly: SIGINT, then SIGTERM, then SIGKILL.
+stop_proc() {
+  local pid=$1
+  local label=$2
+  local elapsed=0
+
+  kill -INT "$pid" 2>/dev/null || true
+  while kill -0 "$pid" 2>/dev/null; do
+    if (( elapsed >= 20 )); then  # 2 seconds
+      log "$label didn't exit on SIGINT, escalating to SIGTERM..."
+      kill -TERM "$pid" 2>/dev/null || true
+      sleep 1
+      if kill -0 "$pid" 2>/dev/null; then
+        log "$label still alive, sending SIGKILL..."
+        kill -KILL "$pid" 2>/dev/null || true
+      fi
+      break
+    fi
+    sleep 0.1
+    elapsed=$((elapsed + 1))
+  done
+  wait "$pid" 2>/dev/null || true
+}
+
+stage() {
+  log ""
+  log "═══ $* ═══"
+}
+
+# ---------- pre-flight checks ----------
+stage "PRE-FLIGHT"
+log "yappr root:      $YAPPR_ROOT"
+log "fluidaudio bin:  $FLUIDAUDIO_BIN"
+log "llm url:         $LLM_URL"
+log "audio out:       $AUDIO"
+log "json out:        $JSON_OUT"
+log "log file:        $LOG_FILE"
+
+if [[ ! -x "$FLUIDAUDIO_BIN" ]]; then
+  log "❌ FluidAudio binary not found or not executable at $FLUIDAUDIO_BIN"
+  exit 1
+fi
+
+if ! curl -s --max-time 2 "${LLM_URL%/chat/completions}/models" >/dev/null 2>&1; then
+  log "⚠  Warning: llama-server not responding at $LLM_URL"
+  log "   (will still try to transcribe, cleanup will fail)"
+fi
+
+# ---------- record (or skip if YAPPR_AUDIO_FILE points at an existing wav) ----------
+stage "RECORDING"
+if [[ -n "${YAPPR_AUDIO_FILE:-}" ]]; then
+  # Skip recording — process an existing file (push-to-talk path)
+  if [[ ! -s "$YAPPR_AUDIO_FILE" ]]; then
+    log "❌ YAPPR_AUDIO_FILE=$YAPPR_AUDIO_FILE is missing or empty"
+    exit 1
+  fi
+  log "Using pre-recorded audio from $YAPPR_AUDIO_FILE"
+  cp "$YAPPR_AUDIO_FILE" "$AUDIO"
+  REC_MS=0
+  REC_RC=0
+  T0=$(now_ms); T1=$T0
+else
+  RECORD_SECS="${YAPPR_RECORD_SECS:-10}"
+  log "Mic capturing for ${RECORD_SECS}s (fixed duration). Override via YAPPR_RECORD_SECS."
+
+  if [[ "$YAPPR_QUIET" != "1" ]]; then
+    echo "" >&2
+    echo "🎙️  RECORDING for ${RECORD_SECS}s — talk now..." >&2
+  fi
+  T0=$(now_ms)
+  COREAUDIO_DEVICE="${YAPPR_COREAUDIO_DEVICE:-MacBook Pro Microphone}"
+  if [[ "$YAPPR_QUIET" == "1" ]]; then
+    sox -q -t coreaudio "$COREAUDIO_DEVICE" -c 1 -r 16000 "$AUDIO" trim 0 "$RECORD_SECS" 2>>"$LOG_FILE"
+  else
+    sox -t coreaudio "$COREAUDIO_DEVICE" -c 1 -r 16000 "$AUDIO" trim 0 "$RECORD_SECS"
+  fi
+  REC_RC=$?
+  T1=$(now_ms)
+  REC_MS=$((T1 - T0))
+fi
+log "rec exited (rc=$REC_RC) after ${REC_MS}ms"
+
+if [[ ! -s "$AUDIO" ]]; then
+  log "❌ Recording is empty. Mic permission / device issue."
+  tail -10 "$LOG_FILE" >&2
+  exit 1
+fi
+
+REC_SIZE=$(stat -f%z "$AUDIO" 2>/dev/null || echo 0)
+REC_INFO=$(sox --i "$AUDIO" 2>&1 | tr '\n' '|' | sed 's/|/ • /g')
+log "Captured: ${REC_SIZE} bytes • ${REC_INFO}"
+RS_MS=0  # No separate resample stage — rec wrote 16kHz directly.
+
+# ---------- STT ----------
+stage "STT (Parakeet v2 via FluidAudio)"
+T2=$(now_ms)
+"$FLUIDAUDIO_BIN" transcribe "$AUDIO" \
+  --model-version v2 \
+  --language en \
+  --output-json "$JSON_OUT" \
+  >>"$LOG_FILE" 2>&1
+STT_RC=$?
+T3=$(now_ms)
+STT_MS=$((T3 - T2))
+
+log "FluidAudio exit code: $STT_RC"
+log "STT time: ${STT_MS}ms"
+
+if [[ ! -f "$JSON_OUT" ]]; then
+  log "❌ FluidAudio did not produce JSON output at $JSON_OUT"
+  log "   See log tail: $LOG_FILE"
+  tail -20 "$LOG_FILE" >&2
+  exit 1
+fi
+
+log "JSON output ($(stat -f%z "$JSON_OUT") bytes):"
+log "$(cat "$JSON_OUT" | head -c 500)"
+
+RAW=$(jq -r '.text // .transcript // empty' "$JSON_OUT" 2>/dev/null)
+if [[ -z "$RAW" ]]; then
+  log "❌ Could not extract text from JSON. Schema may differ. Full JSON:"
+  cat "$JSON_OUT" >&2
+  exit 1
+fi
+
+log "Extracted text: ${#RAW} chars"
+
+# ---------- LLM cleanup ----------
+stage "CLEANUP (local Qwen)"
+SYSTEM_PROMPT=$(cat "$PROMPT_FILE")
+log "Sending to $LLM_URL ..."
+
+BODY=$(jq -n \
+  --arg sys "$SYSTEM_PROMPT" \
+  --arg raw "$RAW" \
+  --argjson max_tokens "$MAX_TOKENS" \
+  --argjson temperature "$TEMPERATURE" \
+  --argjson extras "$EXTRA_PARAMS" \
+  '{
+    messages: [
+      {role: "system", content: $sys},
+      {role: "user",   content: $raw}
+    ],
+    max_tokens: $max_tokens,
+    temperature: $temperature,
+    stream: false
+  } + $extras')
+
+RESP_FILE="/tmp/yappr-resp-$$.json"
+HTTP_TIMINGS=$(curl -s -o "$RESP_FILE" \
+  -w "%{time_starttransfer} %{time_total}\n" \
+  --max-time 60 "$LLM_URL" \
+  -H "Content-Type: application/json" \
+  -d "$BODY")
+CURL_RC=$?
+LLM_TTFT_MS=$(echo "$HTTP_TIMINGS" | awk '{printf "%d", $1*1000}')
+LLM_MS=$(echo     "$HTTP_TIMINGS" | awk '{printf "%d", $2*1000}')
+RESPONSE=$(cat "$RESP_FILE" 2>/dev/null || echo "")
+rm -f "$RESP_FILE"
+
+log "curl exit: $CURL_RC"
+log "TTFT: ${LLM_TTFT_MS}ms"
+log "Cleanup time: ${LLM_MS}ms"
+
+if [[ $CURL_RC -ne 0 ]]; then
+  log "❌ Request to LLM failed"
+  exit 1
+fi
+
+CLEANED=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+if [[ -z "$CLEANED" ]]; then
+  log "❌ LLM response missing content. Full response:"
+  echo "$RESPONSE" >&2
+  exit 1
+fi
+
+USAGE=$(echo "$RESPONSE" | jq -c '.usage // {}' 2>/dev/null)
+log "Token usage: $USAGE"
+
+# ---------- metrics (synchronous JSONL append) ----------
+METRIC_FILE="$YAPPR_ROOT/metrics/$(date +%Y-%m).jsonl"
+mkdir -p "$(dirname "$METRIC_FILE")"
+AUDIO_SECONDS=$(sox --i -D "$AUDIO" 2>/dev/null | head -1 || echo 0)
+[[ -z "$AUDIO_SECONDS" ]] && AUDIO_SECONDS=0
+PROMPT_TOK=$(echo "$RESPONSE" | jq -r '.usage.prompt_tokens // 0' 2>/dev/null)
+COMPLETION_TOK=$(echo "$RESPONSE" | jq -r '.usage.completion_tokens // 0' 2>/dev/null)
+[[ -z "$PROMPT_TOK" ]] && PROMPT_TOK=0
+[[ -z "$COMPLETION_TOK" ]] && COMPLETION_TOK=0
+
+jq -nc \
+  --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --arg llm_url "$LLM_URL" \
+  --arg config_version "$CONFIG_VERSION" \
+  --arg config_hash "$CONFIG_HASH" \
+  --arg backend "$BACKEND" \
+  --arg model_name "$MODEL_NAME" \
+  --arg prompt_hash "$PROMPT_HASH" \
+  --argjson stt_ms "$STT_MS" \
+  --argjson llm_ttft_ms "$LLM_TTFT_MS" \
+  --argjson llm_total_ms "$LLM_MS" \
+  --argjson prompt_tokens "$PROMPT_TOK" \
+  --argjson completion_tokens "$COMPLETION_TOK" \
+  --argjson audio_seconds "$AUDIO_SECONDS" \
+  --argjson raw_chars "${#RAW}" \
+  --argjson cleaned_chars "${#CLEANED}" \
+  '{ts:$ts, llm_url:$llm_url,
+    config_version:$config_version, config_hash:$config_hash,
+    backend:$backend, model_name:$model_name, prompt_hash:$prompt_hash,
+    stt_ms:$stt_ms, llm_ttft_ms:$llm_ttft_ms, llm_total_ms:$llm_total_ms,
+    prompt_tokens:$prompt_tokens, completion_tokens:$completion_tokens,
+    audio_seconds:$audio_seconds,
+    raw_chars:$raw_chars, cleaned_chars:$cleaned_chars}' \
+  >> "$METRIC_FILE" 2>>"$LOG_FILE"
+
+log "Metric appended to $METRIC_FILE"
+
+# ---------- report ----------
+TOTAL_MS=$((STT_MS + LLM_MS))
+
+# Copy to clipboard if requested
+if [[ "$YAPPR_COPY" == "1" ]]; then
+  printf "%s" "$CLEANED" | pbcopy
+  log "Copied to clipboard."
+fi
+
+if [[ "$YAPPR_QUIET" == "1" ]]; then
+  # Hotkey / scripting mode: emit ONLY the cleaned text on stdout.
+  printf "%s" "$CLEANED"
+else
+  stage "RESULT"
+  echo
+  echo "─────────────────────────────────────"
+  echo "RAW:     $RAW"
+  echo "─────────────────────────────────────"
+  echo "CLEANED: $CLEANED"
+  echo "─────────────────────────────────────"
+  printf "⏱  Record:  %5d ms (%s of audio)\n" "$REC_MS" "$(echo "scale=2; $REC_MS/1000" | bc)s"
+  printf "⏱  Resample:%5d ms\n" "$RS_MS"
+  printf "⏱  STT:     %5d ms\n" "$STT_MS"
+  printf "⏱  LLM TTFT:%5d ms\n" "$LLM_TTFT_MS"
+  printf "⏱  Cleanup: %5d ms\n" "$LLM_MS"
+  printf "⏱  Total (post-stop): %d ms\n" "$TOTAL_MS"
+  echo "    Audio:    $AUDIO"
+  echo "    Log:      $LOG_FILE"
+fi

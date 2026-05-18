@@ -1,0 +1,15 @@
+{
+  "version": "v2-mlx-q4",
+  "description": "Qwen3-1.7B 4-bit via mlx_lm.server. Default since 2026-05-17.",
+  "backend": "mlx_lm.server",
+  "llm": {
+    "url": "http://127.0.0.1:8080/v1/chat/completions",
+    "model_name": "mlx-community/Qwen3-1.7B-4bit",
+    "max_tokens": 512,
+    "temperature": 0,
+    "extra_params": {
+      "chat_template_kwargs": {"enable_thinking": false}
+    }
+  },
+  "prompt_file": "prompts/cleanup.txt"
+}
