@@ -82,7 +82,7 @@
 #   YAPPR_COPY              "1" = also pbcopy the cleaned text to the clipboard.
 #                           Independent of streaming; useful for "save to clipboard" CLI use.
 #   YAPPR_DEBUG             "1" (default) = verbose log lines to the log file.
-#   YAPPR_ROOT              Override the repo root (default: $HOME/toolkit/yappr).
+#   YAPPR_ROOT              Override the repo root (auto-detected from script location).
 #
 # EXIT CODES
 # ----------
@@ -110,7 +110,7 @@
 
 set -uo pipefail   # NB: no -e — we want to keep running even if a stage soft-fails so we can see logs
 
-YAPPR_ROOT="${YAPPR_ROOT:-$HOME/toolkit/yappr}"
+YAPPR_ROOT="${YAPPR_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 YAPPR_CONFIG="${YAPPR_CONFIG:-$YAPPR_ROOT/configs/active.json}"
 YAPPR_QUIET="${YAPPR_QUIET:-0}"   # 1 = only print cleaned text to stdout, all logs to file
 YAPPR_COPY="${YAPPR_COPY:-0}"     # 1 = also copy cleaned text to clipboard (pbcopy)

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """yappr-stats — summarize, histogram, trend, and compare yappr metrics.
 
-Reads JSONL files from ~/toolkit/yappr/metrics/*.jsonl.
+Reads JSONL files from <YAPPR_ROOT>/metrics/*.jsonl.
+YAPPR_ROOT is auto-detected from the script location; override with the
+YAPPR_ROOT env var. Override the metrics dir directly with YAPPR_METRICS_DIR.
 
 To call from anywhere, add to your shell rc:
-  export PATH="$HOME/toolkit/yappr/bin:$PATH"
+  export PATH="/path/to/yappr/bin:$PATH"
 """
 
 from __future__ import annotations
@@ -19,7 +21,9 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-METRICS_DIR = Path.home() / "toolkit" / "yappr" / "metrics"
+_self = Path(__file__).resolve()
+YAPPR_ROOT = Path(os.environ.get("YAPPR_ROOT") or _self.parent.parent)
+METRICS_DIR = Path(os.environ.get("YAPPR_METRICS_DIR") or YAPPR_ROOT / "metrics")
 
 # ANSI colors — only when stdout is a TTY and NO_COLOR isn't set
 _COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")

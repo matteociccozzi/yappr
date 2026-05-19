@@ -10,7 +10,7 @@
 
 set -uo pipefail
 
-YAPPR_ROOT="${YAPPR_ROOT:-$HOME/toolkit/yappr}"
+YAPPR_ROOT="${YAPPR_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 YAPPR_CONFIG="${YAPPR_CONFIG:-$YAPPR_ROOT/configs/active.json}"
 N="${1:-10}"
 

@@ -10,11 +10,11 @@
 #   yappr-config delete [-y] <NAME>... Delete config(s). Refuses the active config.
 #   yappr-config path                  Print configs directory path
 #
-# Configs live at $YAPPR_ROOT/configs/*.json (default ~/toolkit/yappr/configs).
+# Configs live at $YAPPR_ROOT/configs/*.json (auto-detected from script location).
 
 set -uo pipefail
 
-YAPPR_ROOT="${YAPPR_ROOT:-$HOME/toolkit/yappr}"
+YAPPR_ROOT="${YAPPR_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 CONFIG_DIR="$YAPPR_ROOT/configs"
 ACTIVE_LINK="$CONFIG_DIR/active.json"
 
