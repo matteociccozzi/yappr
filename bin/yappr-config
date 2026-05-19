@@ -10,12 +10,16 @@
 #   yappr-config delete [-y] <NAME>... Delete config(s). Refuses the active config.
 #   yappr-config path                  Print configs directory path
 #
-# Configs live at $YAPPR_ROOT/configs/*.json (auto-detected from script location).
+# Configs live at $YAPPR_CONFIG_HOME/configs/*.json (user dir),
+# falling back to $YAPPR_ROOT/configs/ (shipped defaults).
 
 set -uo pipefail
 
-YAPPR_ROOT="${YAPPR_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-CONFIG_DIR="$YAPPR_ROOT/configs"
+source "$(dirname "${BASH_SOURCE[0]}")/_yappr-paths.sh"
+
+USER_CONFIG_DIR="$YAPPR_CONFIG_HOME/configs"
+SHIP_CONFIG_DIR="$YAPPR_ROOT/configs"
+CONFIG_DIR="$USER_CONFIG_DIR"
 ACTIVE_LINK="$CONFIG_DIR/active.json"
 
 # ANSI colors — only when stdout is a TTY (so piped output stays clean)
@@ -39,7 +43,15 @@ die() {
 }
 
 ensure_dir() {
-  [[ -d "$CONFIG_DIR" ]] || die "configs directory not found at $CONFIG_DIR"
+  # Accept user dir OR ship dir; CMD_DIR resolves whichever exists.
+  if [[ -d "$USER_CONFIG_DIR" ]]; then
+    CONFIG_DIR="$USER_CONFIG_DIR"
+  elif [[ -d "$SHIP_CONFIG_DIR" ]]; then
+    CONFIG_DIR="$SHIP_CONFIG_DIR"
+  else
+    die "configs directory not found (tried $USER_CONFIG_DIR and $SHIP_CONFIG_DIR)"
+  fi
+  ACTIVE_LINK="$CONFIG_DIR/active.json"
 }
 
 active_name() {
@@ -60,13 +72,22 @@ cmd_list() {
   ensure_dir
   local active
   active=$(active_name)
-  echo "${C_BOLD}${C_CYAN}🎙️  Configs in $CONFIG_DIR:${C_RESET}"
+
+  # Determine which dir to list; note that ensure_dir already set CONFIG_DIR.
+  local list_dir="$CONFIG_DIR"
+  local list_label="$list_dir"
+  # If the user config dir exists show it; otherwise show ship dir with a note.
+  if [[ "$list_dir" == "$SHIP_CONFIG_DIR" ]]; then
+    list_label="${list_dir} ${C_DIM}(shipped defaults — run 'yappr-config use <NAME>' to create your own)${C_RESET}"
+  fi
+
+  echo "${C_BOLD}${C_CYAN}🎙️  Configs in ${list_label}:${C_RESET}"
   echo
   local any=0
   # palette for cycling colors across config rows (skipping the green used for active)
   local palette=("$C_BLUE" "$C_MAGENTA" "$C_YELLOW" "$C_CYAN")
   local idx=0
-  for f in "$CONFIG_DIR"/*.json; do
+  for f in "$list_dir"/*.json; do
     [[ -e "$f" ]] || continue
     local name
     name=$(basename "${f%.json}")
@@ -83,7 +104,7 @@ cmd_list() {
     fi
   done
   if [[ $any -eq 0 ]]; then
-    echo "  ${C_DIM}(no configs yet — drop a JSON file in $CONFIG_DIR)${C_RESET}"
+    echo "  ${C_DIM}(no configs yet — drop a JSON file in $list_dir)${C_RESET}"
   fi
   echo
   echo "${C_BOLD}Active:${C_RESET} ${C_GREEN}${C_BOLD}${active}${C_RESET}"
@@ -95,9 +116,19 @@ cmd_active() {
 }
 
 cmd_use() {
-  ensure_dir
   local name="${1:-}"
   [[ -n "$name" ]] || die "usage: yappr-config use <NAME>"
+
+  # Seed the user config dir from shipped defaults on first use.
+  if [[ ! -d "$USER_CONFIG_DIR" ]]; then
+    mkdir -p "$USER_CONFIG_DIR"
+    cp "$SHIP_CONFIG_DIR"/*.json "$USER_CONFIG_DIR/" 2>/dev/null || true
+  fi
+
+  # After potential seeding, always operate in the user config dir.
+  CONFIG_DIR="$USER_CONFIG_DIR"
+  ACTIVE_LINK="$CONFIG_DIR/active.json"
+
   local target="$CONFIG_DIR/${name}.json"
   [[ -f "$target" ]] || die "config not found: $target"
 
