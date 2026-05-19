@@ -4,6 +4,7 @@
 # Safe to run multiple times (idempotent).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091  # path resolved dynamically at runtime
 source "$HERE/../bin/_yappr-paths.sh"
 
 echo "=== yappr runtime state migration ==="

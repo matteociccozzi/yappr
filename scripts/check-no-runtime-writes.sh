@@ -6,6 +6,7 @@ set -euo pipefail
 YAPPR_ROOT="${YAPPR_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 FAIL=0
+# shellcheck disable=SC2016  # single-quoted patterns are intentional literal strings for grep
 PATTERNS=(
   '\$YAPPR_ROOT/logs'
   '\$YAPPR_ROOT/metrics'

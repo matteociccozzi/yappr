@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # _yappr-paths.sh — source this file (do not execute directly).
 # Sets and exports all YAPPR_* path env vars with XDG-based defaults.
 # Every variable is overridable by the caller's environment.

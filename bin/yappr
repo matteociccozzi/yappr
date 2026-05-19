@@ -110,6 +110,7 @@
 
 set -uo pipefail   # NB: no -e — we want to keep running even if a stage soft-fails so we can see logs
 
+# shellcheck disable=SC1091  # path resolved dynamically at runtime
 source "$(dirname "${BASH_SOURCE[0]}")/_yappr-paths.sh"
 yappr_ensure_dirs
 YAPPR_QUIET="${YAPPR_QUIET:-0}"   # 1 = only print cleaned text to stdout, all logs to file
@@ -168,7 +169,8 @@ now_ms() { python3 -c 'import time; print(int(time.time()*1000))'; }
 now_str() { python3 -c 'import time; t=time.time(); print(time.strftime("%H:%M:%S",time.localtime(t))+".%03d"%int((t-int(t))*1000))'; }
 
 log() {
-  local msg="[$(now_str)] $*"
+  local msg
+  msg="[$(now_str)] $*"
   if [[ "$YAPPR_QUIET" == "1" ]]; then
     echo "$msg" >> "$LOG_FILE"
   else
@@ -251,7 +253,9 @@ TOTAL_HELD_MS=$HELPER_TOTAL_MS
 # wallclock for end-to-end visibility. Compare across the schema bump in
 # configs/default.json (version: "v3-streaming") in yappr-stats.
 STT_MS=$FINALIZE_MS
+# shellcheck disable=SC2034  # REC_MS preserved for metrics schema compat
 REC_MS=$AUDIO_MS
+# shellcheck disable=SC2034  # RS_MS legacy re-sample duration field; always 0 with streaming
 RS_MS=0
 AUDIO_SECONDS=$(python3 -c "print($AUDIO_MS/1000.0)")
 
@@ -376,6 +380,7 @@ fi
 # polluting the stdout text stream.
 if [[ "$YAPPR_QUIET" != "1" ]]; then
   # ANSI colors only when stderr is a TTY and NO_COLOR isn't set
+  # shellcheck disable=SC2034  # R_* vars used via "${R_*}" expansions in printf/echo below
   if [[ -t 2 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
     R_RESET=$'\e[0m'; R_BOLD=$'\e[1m'; R_DIM=$'\e[2m'
     R_RED=$'\e[31m'; R_GREEN=$'\e[32m'; R_YELLOW=$'\e[33m'

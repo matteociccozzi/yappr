@@ -99,7 +99,7 @@ prompt_yn() {
   if [[ $ASSUME_YES -eq 1 ]]; then return 0; fi
   if [[ "$default" == "Y" ]]; then suffix="[Y/n]"; else suffix="[y/N]"; fi
   while true; do
-    read -p "    $prompt $suffix " reply
+    read -rp "    $prompt $suffix " reply
     reply="${reply:-$default}"
     case "$reply" in
       [Yy]*) return 0 ;;
