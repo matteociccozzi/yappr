@@ -19,11 +19,14 @@ import re
 import statistics
 import sys
 from datetime import datetime, timedelta, timezone
+import sys as _sys
 from pathlib import Path
 
-_self = Path(__file__).resolve()
-YAPPR_ROOT = Path(os.environ.get("YAPPR_ROOT") or _self.parent.parent)
-METRICS_DIR = Path(os.environ.get("YAPPR_METRICS_DIR") or YAPPR_ROOT / "metrics")
+_sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _yappr_paths as paths
+
+YAPPR_ROOT = paths.root()
+METRICS_DIR = Path(os.environ.get("YAPPR_METRICS_DIR") or paths.metrics_dir())
 
 # ANSI colors — only when stdout is a TTY and NO_COLOR isn't set
 _COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
@@ -364,6 +367,7 @@ def main(argv: list[str]) -> int:
 def cmd_clear(skip_prompt: bool = False) -> int:
     """Archive all metric files to metrics.bak.<ts>/, effectively clearing stats."""
     import shutil
+    import time
     if not METRICS_DIR.exists():
         print(f"Nothing to clear — {METRICS_DIR} doesn't exist.")
         return 0
@@ -385,7 +389,7 @@ def cmd_clear(skip_prompt: bool = False) -> int:
             print("Aborted.")
             return 1
 
-    backup = METRICS_DIR.parent / f"metrics.bak.{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    backup = paths.state_home() / f"metrics.bak.{int(time.time())}"
     backup.mkdir(parents=True, exist_ok=False)
     for f in files:
         shutil.move(str(f), str(backup / f.name))
