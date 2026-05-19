@@ -26,6 +26,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 YAPPR_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DAEMON_DIR="$YAPPR_ROOT/swift/yappr-stt-daemon"
 YAPPR_DATA_HOME="${YAPPR_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/yappr}"
+YAPPR_CONFIG_HOME="${YAPPR_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/yappr}"
+YAPPR_STATE_HOME="${YAPPR_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/yappr}"
+YAPPR_RUNTIME_DIR="${YAPPR_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/tmp/yappr-$(id -u)}}"
 DAEMON_BIN="$YAPPR_DATA_HOME/build/yappr-stt-daemon/release/YapprSttDaemon"
 CONNECT_BIN="$YAPPR_DATA_HOME/build/yappr-stt-daemon/release/YapprSttConnect"
 
@@ -128,6 +131,11 @@ if [[ ! -d "$DAEMON_DIR" ]]; then
   fail "Cannot find daemon source at $DAEMON_DIR. Is this a yappr checkout?"
 fi
 ok "Repo root: $YAPPR_ROOT"
+
+# Create XDG state and runtime dirs early so subsequent steps can log to them
+mkdir -p "$YAPPR_STATE_HOME/logs" "$YAPPR_STATE_HOME/metrics"
+mkdir -p "$YAPPR_RUNTIME_DIR"
+chmod 0700 "$YAPPR_RUNTIME_DIR"
 
 # -----------------------------------------------------------------------------
 # 1b. Submodules
@@ -263,6 +271,31 @@ if [[ $SKIP_OPTIONAL -eq 0 ]]; then
     fi
   fi
 fi
+
+# -----------------------------------------------------------------------------
+# User config directory
+# -----------------------------------------------------------------------------
+
+step "User config directory ($YAPPR_CONFIG_HOME)"
+
+mkdir -p "$YAPPR_CONFIG_HOME/configs" "$YAPPR_CONFIG_HOME/prompts"
+
+if [[ ! -f "$YAPPR_CONFIG_HOME/configs/default.json" ]]; then
+  cp "$YAPPR_ROOT/configs/default.json" "$YAPPR_CONFIG_HOME/configs/default.json"
+  ok "seeded configs/default.json"
+fi
+
+if [[ ! -f "$YAPPR_CONFIG_HOME/prompts/cleanup.txt" ]]; then
+  cp "$YAPPR_ROOT/prompts/cleanup.txt" "$YAPPR_CONFIG_HOME/prompts/cleanup.txt"
+  ok "seeded prompts/cleanup.txt"
+fi
+
+if [[ ! -L "$YAPPR_CONFIG_HOME/configs/active.json" ]]; then
+  ln -s default.json "$YAPPR_CONFIG_HOME/configs/active.json"
+  ok "active config → default.json"
+fi
+
+ok "user config at $YAPPR_CONFIG_HOME"
 
 # -----------------------------------------------------------------------------
 # 7. Build the Swift daemon
