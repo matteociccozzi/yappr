@@ -1,6 +1,6 @@
 {
-  "version": "default",
-  "description": "Default baseline: Qwen3-1.7B-4bit via custom yappr-mlx-server with explicit prefix caching (port 8081).",
+  "version": "v3-streaming",
+  "description": "Streaming STT (Nemotron 0.6B @ 560ms via yappr-stt-daemon) + Qwen3-1.7B-4bit cleanup via yappr-mlx-server.",
   "backend": "yappr-mlx-server",
   "llm": {
     "url": "http://127.0.0.1:8081/v1/chat/completions",

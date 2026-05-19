@@ -4,7 +4,7 @@
 
 ![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-000000?style=flat-square&logo=apple)
 ![MLX](https://img.shields.io/badge/MLX-orange?style=flat-square)
-![Parakeet](https://img.shields.io/badge/Parakeet%20v2-purple?style=flat-square)
+![Nemotron](https://img.shields.io/badge/Nemotron%200.6B%20streaming-purple?style=flat-square)
 ![Qwen3](https://img.shields.io/badge/Qwen3--1.7B--4bit-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
@@ -16,7 +16,7 @@
 
 You hold **Ctrl+Option+Y**, talk, and release. Under the hood:
 
-1. 🎙️ **Parakeet** (ASR) transcribes your audio (English-only, on-device)
+1. 🎙️ A **long-running Swift daemon** (`YapprSttDaemon`) owns the mic via `AVAudioEngine` and runs **streaming Nemotron 0.6B** (FluidAudio) in-process. Press = socket connect = mic on; release = half-close = mic off + finalize. Hotkey-to-first-sample is fast because the model is preloaded and the engine is warmed.
 2. 🧠 **Qwen3-1.7B-4bit via MLX** cleans up the verbatim transcript (removes "um", fixes grammar, adds punctuation)
 3. ⚡ Each token is **typed at your cursor as it streams** from the LLM — Wispr-Flow style
 4. 🎯 The LLM cleanup runs on a **custom MLX server with explicit prefix caching** we built because stock `mlx_lm.server` doesn't cache prefixes across independent API calls — measured **~32% TTFT reduction** on a ~340-token cleanup prompt
@@ -72,46 +72,21 @@ This is the part that makes yappr feel like *dictation*, not just transcription.
 
 ## 🚀 Quick install
 
-Requires macOS on Apple Silicon (M1/M2/M3/M4). Full guide: [`docs/installation.md`](docs/installation.md).
+macOS on Apple Silicon (M1/M2/M3/M4). Three lines:
 
 ```bash
-# 1. Clone
 git clone https://github.com/matteociccozzi/yappr.git ~/toolkit/yappr
 cd ~/toolkit/yappr
-
-# 2. Homebrew deps
-brew install ffmpeg sox jq python@3.12 uv
-brew install --cask hammerspoon
-
-# 3. MLX runtime
-uv tool install mlx-lm
-
-# 4. Build FluidAudio (Parakeet ASR)
-git clone https://github.com/FluidInference/FluidAudio.git vendor/FluidAudio
-cd vendor/FluidAudio && swift build -c release && cd -
-
-# 5. PATH
-echo 'export PATH="$HOME/toolkit/yappr/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
-
-# 6. Start the MLX server (in its own terminal)
-yappr-mlx-server \
-    --model              mlx-community/Qwen3-1.7B-4bit \
-    --system-prompt-file ~/toolkit/yappr/prompts/cleanup.txt \
-    --host 127.0.0.1 --port 8081
+./scripts/install.sh
 ```
 
-Then drop the Hammerspoon `init.lua` snippet from [`docs/installation.md#7-set-up-hammerspoon-optional-but-recommended`](docs/installation.md) into `~/.hammerspoon/init.lua` and reload. Grant **Accessibility** + **Input Monitoring** permissions.
+The script is idempotent and handles dependencies, the Swift build, codesigning, and PATH setup. Three permissions it **can't** grant for you (macOS will prompt):
 
-### Smoke test
+- 🎙️ Microphone access for the daemon (system dialog on first launch)
+- ⌨️ Accessibility + Input Monitoring for Hammerspoon (push-to-talk)
+- 🧠 LLM endpoint configuration (edit `configs/active.json`)
 
-```bash
-yappr-config list                                  # 'default' should be marked active
-curl -s http://127.0.0.1:8081/health | jq          # server alive?
-YAPPR_RECORD_SECS=4 yappr                          # 4-sec mic capture from a terminal
-```
-
-Then click into any text field, **hold Ctrl+Option+Y**, say *"um so like testing yappr one two three"*, release. The cleaned text streams in.
+Full step-by-step walkthrough: [`docs/installation.md`](docs/installation.md).
 
 ---
 
@@ -137,7 +112,7 @@ I love [Wispr Flow](https://wisprflow.ai/). I just wanted the same experience wi
 
 ## 🚧 Roadmap / known limitations
 
-- 🇬🇧 **English only** (Parakeet v2). Multilingual would need Parakeet v3.
+- 🇬🇧 **English only** (Nemotron 0.6B streaming). Multilingual would mean swapping the model in the daemon.
 - ⛔ **No speculative decoding yet** — there's an [open bug in mlx-lm with the Qwen3 family](https://github.com/ml-explore/mlx-lm/issues/846); revisit later.
 - 👤 **Single-tenant inference server** — one lock, one shared cache. Not a load-balanced production thing.
 - 🧩 **Full-attention models only** — SSM/Mamba/hybrid won't work with the cache primitive.
@@ -147,7 +122,7 @@ I love [Wispr Flow](https://wisprflow.ai/). I just wanted the same experience wi
 
 ## 🙏 Credits
 
-[Wispr Flow](https://wisprflow.ai/) (the UX inspiration), [MLX](https://github.com/ml-explore/mlx) / [mlx-lm](https://github.com/ml-explore/mlx-lm), [FluidAudio](https://github.com/FluidInference/FluidAudio), [NVIDIA Parakeet](https://huggingface.co/nvidia/parakeet-tdt_ctc-1.1b), [Qwen3](https://qwenlm.github.io/), [Hammerspoon](https://www.hammerspoon.org/).
+[Wispr Flow](https://wisprflow.ai/) (the UX inspiration), [MLX](https://github.com/ml-explore/mlx) / [mlx-lm](https://github.com/ml-explore/mlx-lm), [FluidAudio](https://github.com/FluidInference/FluidAudio) (streaming Nemotron 0.6B), [Qwen3](https://qwenlm.github.io/), [Hammerspoon](https://www.hammerspoon.org/).
 
 ---
 

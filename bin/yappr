@@ -5,42 +5,46 @@
 # WHAT IT DOES
 # ------------
 # Runs one full dictation cycle end-to-end:
-#   audio in  →  STT (Parakeet via FluidAudio)  →  cleanup (Qwen via yappr-llm-call)
-#             →  streamed text out  →  per-run JSONL metric appended.
+#   mic (via daemon)  →  STT (Nemotron 0.6B streaming, in-daemon)
+#                     →  cleanup (Qwen via yappr-llm-call)
+#                     →  streamed text out  →  per-run JSONL metric appended.
 #
 # ROLE IN THE STACK
 # -----------------
 # This is the entry point Hammerspoon invokes when the user releases the
-# Ctrl+Option+Y hotkey. Hammerspoon records audio with ffmpeg and hands the
-# wav file off via YAPPR_AUDIO_FILE; yappr does everything after that.
+# Ctrl+Option+Y hotkey. A long-running Swift daemon (yappr-stt-daemon) owns
+# the mic via AVAudioEngine and runs streaming STT; yappr spawns a tiny Swift
+# socket client (YapprSttConnect) that connects to /tmp/yappr-stt.sock — the
+# connection itself is what tells the daemon to open the mic. Hammerspoon
+# sends SIGTERM on hotkey-release, the client half-closes, the daemon
+# finalizes, and the transcript comes back on the client's stdout.
 # Cleaned text streams on STDOUT chunk-by-chunk; Hammerspoon's streamCallback
 # types each chunk at the cursor as it arrives.
 #
-# It can also be invoked from the terminal directly — without YAPPR_AUDIO_FILE
-# it records from the mic via sox, with no hotkey involved.
-#
 # PIPELINE STAGES (in order)
 # --------------------------
-#   1. PRE-FLIGHT
+#   1. FAST-PATH SOCKET CONNECT (latency-critical)
+#      - Verify /tmp/yappr-stt.sock exists; spawn YapprSttConnect in the
+#        background BEFORE doing any other work. Connecting opens the mic in
+#        the daemon, so config-load / preflight runs in parallel with audio
+#        capture instead of delaying it. Swift binary startup (~3-5 ms) is
+#        the only unavoidable cost on the head of the recording.
+#
+#   2. PRE-FLIGHT (runs in parallel with recording)
 #      - Load active config from $YAPPR_CONFIG (default: configs/active.json).
 #      - Read llm.url, model_name, max_tokens, temperature, extra_params,
 #        version, hash.
 #      - Hash the prompt file too (independent of config hash) so metric
 #        records can distinguish prompt edits from config edits.
-#      - Verify FluidAudio binary exists and llama-style endpoint is responding.
+#      - Health-check the llama-style endpoint (warn-only, non-fatal).
 #
-#   2. RECORDING (or skipped if YAPPR_AUDIO_FILE is set)
-#      - Use sox + CoreAudio device named "MacBook Pro Microphone" (override
-#        via YAPPR_COREAUDIO_DEVICE).
-#      - Fixed duration via YAPPR_RECORD_SECS (default 10) — sox's signal
-#        handling on macOS is unreliable, so we don't use VAD/SIGINT stops here.
-#      - In Hammerspoon mode, ffmpeg handles the recording externally; this
-#        block is skipped and YAPPR_AUDIO_FILE points at the resulting wav.
-#
-#   3. STT (Parakeet via FluidAudio)
-#      - Invokes the compiled fluidaudiocli binary with --model-version v2
-#        (English-only Parakeet) and --language en.
-#      - Reads the resulting .json file, extracts .text → $RAW.
+#   3. WAIT + STT FINALIZE
+#      - Wait for SIGTERM (Hammerspoon hotkey release) or Ctrl+C; trap forwards
+#        it to YapprSttConnect, which half-closes the socket. Daemon finalizes
+#        the stream, returns the transcript on the client's stdout, client
+#        exits. Stderr from the client carries audio_ms / finalize_ms /
+#        total_ms which we scrape for the metrics record.
+#      - Empty transcript = silent exit 0 (user released without speaking).
 #
 #   4. LLM CLEANUP (streaming via yappr-llm-call)
 #      - Builds the chat-completions body using the loaded config's params,
@@ -52,16 +56,16 @@
 #
 #   5. METRICS EMIT (synchronous JSONL append)
 #      - Composes one line per run including: timestamp, llm_url, config_version,
-#        config_hash, backend, model_name, prompt_hash, stt_ms, llm_ttft_ms,
-#        llm_total_ms, prompt_tokens, completion_tokens, audio_seconds,
-#        raw_chars, cleaned_chars.
+#        config_hash, backend, model_name, prompt_hash, stt_ms,
+#        stt_total_held_ms, llm_ttft_ms, llm_total_ms, prompt/completion tokens,
+#        audio_seconds, raw_chars, cleaned_chars.
 #      - Appends to metrics/<YYYY-MM>.jsonl.
 #      - Synchronous because the cost (~5-10 ms) is invisible relative to the
 #        operation being measured.
 #
 #   6. REPORT (non-quiet mode only)
-#      - Pretty-printed timings + audio path + log path go to STDERR so the
-#        STDOUT text stream stays clean.
+#      - Pretty-printed timings + log path go to STDERR so the STDOUT text
+#        stream stays clean.
 #
 # OUTPUT DISCIPLINE
 # -----------------
@@ -69,66 +73,81 @@
 # STDERR = diagnostics / log / per-stage report.
 # Logs   = per-run files in logs/<timestamp>.log (also receives DEBUG-level logs).
 # Metrics = metrics/<YYYY-MM>.jsonl (one JSON line per run).
-# Both files use the same <timestamp> prefix so they correlate trivially.
 #
 # ENV VAR CONTROLS (call-time)
 # ----------------------------
 #   YAPPR_CONFIG            Path to active config (default: configs/active.json).
-#   YAPPR_AUDIO_FILE        Use this existing wav instead of recording.
-#                           Set by Hammerspoon, which captures with ffmpeg.
-#   YAPPR_RECORD_SECS       Fixed recording duration in interactive mode (default 10).
-#   YAPPR_COREAUDIO_DEVICE  CoreAudio input device name (default "MacBook Pro Microphone").
 #   YAPPR_QUIET             "1" = stdout is JUST the streamed text, no report.
 #                           Hammerspoon sets this.
 #   YAPPR_COPY              "1" = also pbcopy the cleaned text to the clipboard.
 #                           Independent of streaming; useful for "save to clipboard" CLI use.
 #   YAPPR_DEBUG             "1" (default) = verbose log lines to the log file.
-#   YAPPR_LLM_URL           Legacy override — config's llm.url wins now.
+#   YAPPR_ROOT              Override the repo root (default: $HOME/toolkit/yappr).
 #
 # EXIT CODES
 # ----------
-#   0  on success.
-#   1  on any stage failure (mic empty, STT no JSON, LLM error, etc.).
+#   0  on success (including empty transcript).
+#   1  on any stage failure (missing daemon socket, missing config, LLM error, etc.).
 #      Detailed reason goes to STDERR + the log file.
 #
 # ASSUMPTIONS / LIMITATIONS
 # -------------------------
-# * Requires jq, sox, python3, FluidAudio binary, and the LLM server configured
-#   in active.json to be reachable.
-# * Single-shot per invocation. No persistent state, no sessions — every run
-#   is independent. (The LLM server may cache prefix state, but that's its
-#   concern, not yappr's.)
-# * Audio capture is fixed-duration on macOS because sox's signal-handling
-#   under CoreAudio is broken — we tried push-to-talk and SIGINT, both fail.
-#   Hammerspoon uses ffmpeg which DOES handle SIGTERM cleanly, and is the
-#   intended production path.
+# * Requires jq, python3, the yappr-stt-daemon running with its socket at
+#   /tmp/yappr-stt.sock, and the LLM server configured in active.json reachable.
+# * Single-shot per invocation. No persistent state in yappr itself — the
+#   daemon stays warm across invocations so the STT model isn't reloaded.
 # * Set -e is deliberately OFF (only -uo pipefail). A soft failure in one
 #   stage still produces logs we can read, instead of vanishing silently.
 #
 # EXAMPLE
 # -------
-#   # Hammerspoon mode (recording done externally):
-#   YAPPR_QUIET=1 YAPPR_AUDIO_FILE=/tmp/foo.wav yappr
+#   # Hammerspoon mode:
+#   YAPPR_QUIET=1 yappr
 #
-#   # Interactive mode (records via sox, prints report to stderr):
-#   YAPPR_RECORD_SECS=8 yappr
+#   # Interactive mode (talk, Ctrl+C to stop, report printed to stderr):
+#   yappr
 #
 
 set -uo pipefail   # NB: no -e — we want to keep running even if a stage soft-fails so we can see logs
 
 YAPPR_ROOT="${YAPPR_ROOT:-$HOME/toolkit/yappr}"
-FLUIDAUDIO_DIR="$YAPPR_ROOT/vendor/FluidAudio"
-FLUIDAUDIO_BIN="$FLUIDAUDIO_DIR/.build/arm64-apple-macosx/release/fluidaudiocli"
-RECORDINGS_DIR="$YAPPR_ROOT/recordings"
-LOGS_DIR="$YAPPR_ROOT/logs"
 YAPPR_CONFIG="${YAPPR_CONFIG:-$YAPPR_ROOT/configs/active.json}"
-YAPPR_DEBUG="${YAPPR_DEBUG:-1}"
 YAPPR_QUIET="${YAPPR_QUIET:-0}"   # 1 = only print cleaned text to stdout, all logs to file
 YAPPR_COPY="${YAPPR_COPY:-0}"     # 1 = also copy cleaned text to clipboard (pbcopy)
+
+# --- LATENCY-CRITICAL FAST PATH ---
+# The daemon opens the mic when we connect to the socket, so any work before
+# THIS LINE means truncated audio. Bash startup is the only thing we cannot
+# avoid; everything else (config-load, jq, log file setup, curl health check)
+# is deferred until AFTER the helper is spawned and recording in background.
+if [[ ! -S /tmp/yappr-stt.sock ]]; then
+  echo "❌ daemon socket not found at /tmp/yappr-stt.sock" >&2
+  echo "   start it first: $YAPPR_ROOT/swift/yappr-stt-daemon/.build/release/YapprSttDaemon &" >&2
+  exit 1
+fi
+
+STREAM_OUT=$(mktemp -t yappr-stream-out.XXXXXX)
+STREAM_ERR=$(mktemp -t yappr-stream-err.XXXXXX)
+
+# Spawn the Swift client IMMEDIATELY. It opens the unix socket (which is
+# what signals the daemon to start the mic), then blocks reading. SIGTERM
+# (= Hammerspoon hotkey release) triggers the half-close. Swift binary
+# startup is ~3-5 ms vs python3's ~30-50 ms — the difference is audio we
+# would otherwise lose at the start of the dictation.
+"$YAPPR_ROOT/swift/yappr-stt-daemon/.build/release/YapprSttConnect" >"$STREAM_OUT" 2>"$STREAM_ERR" &
+STREAM_PID=$!
+trap 'kill -TERM '"$STREAM_PID"' 2>/dev/null' TERM INT
+
+# --- everything below runs in parallel with the recording ---
+# The mic is open and capturing while bash does config-load + preflight.
+
+LOGS_DIR="$YAPPR_ROOT/logs"
+YAPPR_DEBUG="${YAPPR_DEBUG:-1}"
 
 # Load active cleanup config — all LLM-call params come from here
 if [[ ! -f "$YAPPR_CONFIG" ]]; then
   echo "❌ No yappr config at $YAPPR_CONFIG. Run: yappr-config list" >&2
+  kill -TERM "$STREAM_PID" 2>/dev/null
   exit 1
 fi
 LLM_URL=$(jq -r '.llm.url' "$YAPPR_CONFIG")
@@ -143,12 +162,8 @@ CONFIG_HASH=$(jq -cS . "$YAPPR_CONFIG" | shasum -a 256 | awk '{print substr($1,1
 PROMPT_FILE="$YAPPR_ROOT/$(jq -r '.prompt_file' "$YAPPR_CONFIG")"
 PROMPT_HASH=$(shasum -a 256 "$PROMPT_FILE" 2>/dev/null | awk '{print substr($1,1,12)}')
 
-mkdir -p "$RECORDINGS_DIR" "$LOGS_DIR"
-
+mkdir -p "$LOGS_DIR"
 STAMP=$(date +%Y%m%d-%H%M%S)
-AUDIO="$RECORDINGS_DIR/${STAMP}.wav"
-AUDIO_RAW="$RECORDINGS_DIR/${STAMP}.raw.wav"
-JSON_OUT="$RECORDINGS_DIR/${STAMP}.json"
 LOG_FILE="$LOGS_DIR/${STAMP}.log"
 
 # ---------- helpers ----------
@@ -193,103 +208,70 @@ stage() {
   log "═══ $* ═══"
 }
 
-# ---------- pre-flight checks ----------
+# ---------- pre-flight (logged after the fact; mic is already open) ----------
 stage "PRE-FLIGHT"
 log "yappr root:      $YAPPR_ROOT"
-log "fluidaudio bin:  $FLUIDAUDIO_BIN"
 log "llm url:         $LLM_URL"
-log "audio out:       $AUDIO"
-log "json out:        $JSON_OUT"
 log "log file:        $LOG_FILE"
-
-if [[ ! -x "$FLUIDAUDIO_BIN" ]]; then
-  log "❌ FluidAudio binary not found or not executable at $FLUIDAUDIO_BIN"
-  exit 1
-fi
 
 if ! curl -s --max-time 2 "${LLM_URL%/chat/completions}/models" >/dev/null 2>&1; then
   log "⚠  Warning: llama-server not responding at $LLM_URL"
   log "   (will still try to transcribe, cleanup will fail)"
 fi
 
-# ---------- record (or skip if YAPPR_AUDIO_FILE points at an existing wav) ----------
-stage "RECORDING"
-if [[ -n "${YAPPR_AUDIO_FILE:-}" ]]; then
-  # Skip recording — process an existing file (push-to-talk path)
-  if [[ ! -s "$YAPPR_AUDIO_FILE" ]]; then
-    log "❌ YAPPR_AUDIO_FILE=$YAPPR_AUDIO_FILE is missing or empty"
-    exit 1
-  fi
-  log "Using pre-recorded audio from $YAPPR_AUDIO_FILE"
-  cp "$YAPPR_AUDIO_FILE" "$AUDIO"
-  REC_MS=0
-  REC_RC=0
-  T0=$(now_ms); T1=$T0
-else
-  RECORD_SECS="${YAPPR_RECORD_SECS:-10}"
-  log "Mic capturing for ${RECORD_SECS}s (fixed duration). Override via YAPPR_RECORD_SECS."
+# ---------- record + STT (in-daemon mic, streaming via yappr-stt-daemon) ----------
+stage "STT (in-daemon mic + streaming Nemotron 0.6B)"
 
-  if [[ "$YAPPR_QUIET" != "1" ]]; then
-    echo "" >&2
-    echo "🎙️  RECORDING for ${RECORD_SECS}s — talk now..." >&2
-  fi
-  T0=$(now_ms)
-  COREAUDIO_DEVICE="${YAPPR_COREAUDIO_DEVICE:-MacBook Pro Microphone}"
-  if [[ "$YAPPR_QUIET" == "1" ]]; then
-    sox -q -t coreaudio "$COREAUDIO_DEVICE" -c 1 -r 16000 "$AUDIO" trim 0 "$RECORD_SECS" 2>>"$LOG_FILE"
-  else
-    sox -t coreaudio "$COREAUDIO_DEVICE" -c 1 -r 16000 "$AUDIO" trim 0 "$RECORD_SECS"
-  fi
-  REC_RC=$?
-  T1=$(now_ms)
-  REC_MS=$((T1 - T0))
-fi
-log "rec exited (rc=$REC_RC) after ${REC_MS}ms"
-
-if [[ ! -s "$AUDIO" ]]; then
-  log "❌ Recording is empty. Mic permission / device issue."
-  tail -10 "$LOG_FILE" >&2
-  exit 1
+if [[ "$YAPPR_QUIET" != "1" ]]; then
+  echo "" >&2
+  echo "🎙️  RECORDING — talk now, release hotkey (or Ctrl+C) to stop..." >&2
 fi
 
-REC_SIZE=$(stat -f%z "$AUDIO" 2>/dev/null || echo 0)
-REC_INFO=$(sox --i "$AUDIO" 2>&1 | tr '\n' '|' | sed 's/|/ • /g')
-log "Captured: ${REC_SIZE} bytes • ${REC_INFO}"
-RS_MS=0  # No separate resample stage — rec wrote 16kHz directly.
+# The python helper is already spawned (above) and recording in the
+# background. Wait for SIGTERM (Hammerspoon hotkey release) → helper half-
+# closes the socket → daemon finalizes → helper exits with transcript on
+# stdout. `wait` returns 128+signum after the trap fires without waiting for
+# the child to actually exit, so we spin on kill -0 until reaped.
+wait "$STREAM_PID"
+while kill -0 "$STREAM_PID" 2>/dev/null; do sleep 0.02; done
+trap - TERM INT
 
-# ---------- STT ----------
-stage "STT (Parakeet v2 via FluidAudio)"
-T2=$(now_ms)
-"$FLUIDAUDIO_BIN" transcribe "$AUDIO" \
-  --model-version v2 \
-  --language en \
-  --output-json "$JSON_OUT" \
-  >>"$LOG_FILE" 2>&1
-STT_RC=$?
-T3=$(now_ms)
-STT_MS=$((T3 - T2))
+STREAM_LOG=$(cat "$STREAM_ERR")
+echo "$STREAM_LOG" >> "$LOG_FILE"
+AUDIO_MS=$(echo "$STREAM_LOG" | grep -oE 'audio_ms=[0-9]+' | tail -1 | cut -d= -f2)
+FINALIZE_MS=$(echo "$STREAM_LOG" | grep -oE 'finalize_ms=[0-9]+' | tail -1 | cut -d= -f2)
+HELPER_TOTAL_MS=$(echo "$STREAM_LOG" | grep -oE 'total_ms=[0-9]+' | tail -1 | cut -d= -f2)
+[[ -z "$AUDIO_MS" ]] && AUDIO_MS=0
+[[ -z "$FINALIZE_MS" ]] && FINALIZE_MS=0
+[[ -z "$HELPER_TOTAL_MS" ]] && HELPER_TOTAL_MS=0
+# TOTAL_HELD_MS reflects helper t_start → transcript-received. The bash work
+# that runs in parallel with the helper doesn't extend the user-perceived
+# delay, so this is the right metric.
+TOTAL_HELD_MS=$HELPER_TOTAL_MS
 
-log "FluidAudio exit code: $STT_RC"
-log "STT time: ${STT_MS}ms"
+# Semantic shift: with streaming, stt_ms covers only the post-EOF finalize
+# (typically ~30 ms). The new stt_total_held_ms field captures press-to-transcript
+# wallclock for end-to-end visibility. Compare across the schema bump in
+# configs/default.json (version: "v3-streaming") in yappr-stats.
+STT_MS=$FINALIZE_MS
+REC_MS=$AUDIO_MS
+RS_MS=0
+AUDIO_SECONDS=$(python3 -c "print($AUDIO_MS/1000.0)")
 
-if [[ ! -f "$JSON_OUT" ]]; then
-  log "❌ FluidAudio did not produce JSON output at $JSON_OUT"
-  log "   See log tail: $LOG_FILE"
-  tail -20 "$LOG_FILE" >&2
-  exit 1
-fi
+RAW=$(cat "$STREAM_OUT")
+rm -f "$STREAM_OUT" "$STREAM_ERR"
 
-log "JSON output ($(stat -f%z "$JSON_OUT") bytes):"
-log "$(cat "$JSON_OUT" | head -c 500)"
+log "audio_ms=$AUDIO_MS finalize_ms=$FINALIZE_MS total_held_ms=$TOTAL_HELD_MS"
 
-RAW=$(jq -r '.text // .transcript // empty' "$JSON_OUT" 2>/dev/null)
+# Empty transcript: user pressed-and-released without speech, or the model
+# couldn't recognize anything. Not a hard error — skip the LLM cleanup and
+# exit 0 silently so Hammerspoon doesn't pop an alert.
 if [[ -z "$RAW" ]]; then
-  log "❌ Could not extract text from JSON. Schema may differ. Full JSON:"
-  cat "$JSON_OUT" >&2
-  exit 1
+  log "empty transcript (no speech detected); skipping LLM cleanup"
+  exit 0
 fi
 
-log "Extracted text: ${#RAW} chars"
+log "Raw transcript (${#RAW} chars): $RAW"
 
 # ---------- LLM cleanup ----------
 stage "CLEANUP (local Qwen)"
@@ -351,11 +333,9 @@ USAGE="{\"prompt_tokens\":$PROMPT_TOK,\"completion_tokens\":$COMPLETION_TOK}"
 log "Token usage: $USAGE"
 
 # ---------- metrics (synchronous JSONL append) ----------
+# AUDIO_SECONDS was set from AUDIO_MS in the streaming STT block above.
 METRIC_FILE="$YAPPR_ROOT/metrics/$(date +%Y-%m).jsonl"
 mkdir -p "$(dirname "$METRIC_FILE")"
-AUDIO_SECONDS=$(sox --i -D "$AUDIO" 2>/dev/null | head -1 || echo 0)
-[[ -z "$AUDIO_SECONDS" ]] && AUDIO_SECONDS=0
-# PROMPT_TOK / COMPLETION_TOK already set by yappr-llm-call helper above
 
 jq -nc \
   --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -366,6 +346,7 @@ jq -nc \
   --arg model_name "$MODEL_NAME" \
   --arg prompt_hash "$PROMPT_HASH" \
   --argjson stt_ms "$STT_MS" \
+  --argjson stt_total_held_ms "$TOTAL_HELD_MS" \
   --argjson llm_ttft_ms "$LLM_TTFT_MS" \
   --argjson llm_total_ms "$LLM_MS" \
   --argjson prompt_tokens "$PROMPT_TOK" \
@@ -376,7 +357,8 @@ jq -nc \
   '{ts:$ts, llm_url:$llm_url,
     config_version:$config_version, config_hash:$config_hash,
     backend:$backend, model_name:$model_name, prompt_hash:$prompt_hash,
-    stt_ms:$stt_ms, llm_ttft_ms:$llm_ttft_ms, llm_total_ms:$llm_total_ms,
+    stt_ms:$stt_ms, stt_total_held_ms:$stt_total_held_ms,
+    llm_ttft_ms:$llm_ttft_ms, llm_total_ms:$llm_total_ms,
     prompt_tokens:$prompt_tokens, completion_tokens:$completion_tokens,
     audio_seconds:$audio_seconds,
     raw_chars:$raw_chars, cleaned_chars:$cleaned_chars}' \
@@ -410,14 +392,12 @@ if [[ "$YAPPR_QUIET" != "1" ]]; then
     echo "${R_DIM}─────────────────────────────────────${R_RESET}"
     echo "${R_DIM}RAW (from STT):${R_RESET} ${R_BOLD}${RAW}${R_RESET}"
     echo "${R_DIM}─────────────────────────────────────${R_RESET}"
-    printf "${R_CYAN}⏱  Record:${R_RESET}    ${R_BOLD}%5d ms${R_RESET}  ${R_DIM}(%s of audio)${R_RESET}\n" \
-           "$REC_MS" "$(echo "scale=2; $REC_MS/1000" | bc)s"
-    printf "${R_BLUE}⏱  Resample:${R_RESET}  ${R_BOLD}%5d ms${R_RESET}\n" "$RS_MS"
-    printf "${R_MAGENTA}⏱  STT:${R_RESET}       ${R_BOLD}%5d ms${R_RESET}\n" "$STT_MS"
-    printf "${R_YELLOW}⏱  LLM TTFT:${R_RESET}  ${R_BOLD}%5d ms${R_RESET}\n" "$LLM_TTFT_MS"
-    printf "${R_GREEN}⏱  Cleanup:${R_RESET}   ${R_BOLD}%5d ms${R_RESET}\n" "$LLM_MS"
+    printf "${R_CYAN}⏱  Held:${R_RESET}        ${R_BOLD}%5d ms${R_RESET}  ${R_DIM}(%s of audio)${R_RESET}\n" \
+           "$TOTAL_HELD_MS" "$(echo "scale=2; $AUDIO_MS/1000" | bc)s"
+    printf "${R_MAGENTA}⏱  STT finalize:${R_RESET}${R_BOLD}%5d ms${R_RESET}  ${R_DIM}(post-EOF)${R_RESET}\n" "$STT_MS"
+    printf "${R_YELLOW}⏱  LLM TTFT:${R_RESET}    ${R_BOLD}%5d ms${R_RESET}\n" "$LLM_TTFT_MS"
+    printf "${R_GREEN}⏱  Cleanup:${R_RESET}     ${R_BOLD}%5d ms${R_RESET}\n" "$LLM_MS"
     printf "${R_BOLD}⏱  Total (post-stop):${R_RESET} ${R_BOLD}%d ms${R_RESET}\n" "$TOTAL_MS"
-    echo "    ${R_DIM}Audio:${R_RESET}    $AUDIO"
     echo "    ${R_DIM}Log:${R_RESET}      $LOG_FILE"
   } >&2
 fi

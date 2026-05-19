@@ -9,6 +9,15 @@ metrics.bak.*/
 #   cd vendor/FluidAudio && swift build -c release
 vendor/FluidAudio/
 
+# Swift build output for the local daemon
+swift/yappr-stt-daemon/.build/
+swift/yappr-stt-daemon/.swiftpm/
+swift/yappr-stt-daemon/Package.resolved
+
+# Python cache
+__pycache__/
+*.pyc
+
 # Temp / scratch
 *.tmp
 *.bak
