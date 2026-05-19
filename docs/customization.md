@@ -9,45 +9,66 @@
 
 ### What the prompt should do
 
-The shipped prompt is tightly framed as a **transcript cleaner**, not a chatbot. Key properties:
+The shipped prompt is tightly framed as a **dictation formatter**, not a chatbot. Key properties:
 
-- Removes disfluencies ("um", "uh", "like", "you know", repeated words).
-- Fixes grammar and adds punctuation.
+- Preserves the speaker's words verbatim — no rewriting, paraphrasing, or "polishing".
+- Only does five things: sentence-start capitalization + terminal punctuation, sparing internal punctuation, disfluency strip ("um"/"uh"/"like"/repeated words), spoken→written contraction normalization ("gonna" → "going to"), and inline voice-command directives.
 - **Rewrites questions and commands** — never answers them. A user dictating "what time is the meeting" should get back `What time is the meeting?`, not `The meeting is at 3pm.`.
+- Knows about Nemotron 0.6B streaming artifacts: corrects "pneumotron"/"nematron" mishearings only in clear technical context, and leaves last-word truncations as-is rather than guessing.
 - Preserves technical terms, file paths, code identifiers verbatim.
-- Interprets voice commands inline (see [`docs/usage.md`](usage.md) or the README).
+- Interprets voice commands inline (full list in the [README](../README.md#voice-commands)).
+
+### How request params are assembled
+
+The cleanup client merges the active config's `llm.extra_params` into the chat-completions request body. For the default Qwen3-1.7B-4bit config that means `chat_template_kwargs: {enable_thinking: false}` is appended to disable Qwen3's `<think>` block. Anything OpenAI-compatible-but-vendor-specific (sampling knobs, template kwargs, tool config) goes there — see [`docs/configuration.md`](configuration.md) for the schema.
 
 ### Custom vocabulary
 
-The prompt has a section for force-spelling brand names and project names that STT might mangle. The shipped example:
+`prompts/cleanup.txt` has a `# Custom vocabulary` section for force-spelling brand and project names that STT mangles. The shipped example pins `yappr` to lowercase. Add your own entries beneath it — anything you say frequently that Nemotron gets wrong is a candidate: internal project names, oddly-spelled company names, jargon. Pattern:
 
 ```
-# Custom vocabulary
-- "yappr" is the name of this tool. ALWAYS spell it as lowercase "yappr".
-  Replace any STT artifact such as "yapper", "Yapper", or "yapr" with
-  "yappr". Use lowercase "yappr" EVEN at the start of a sentence (it is a
-  brand name like "iPhone" or "macOS" — sentence-start capitalization does
-  not apply).
+- "<correct spelling>" is <one-line context>. Replace STT artifacts
+  (<variant>, <variant>, ...) with "<correct spelling>".
 ```
 
-Add your own. Anything you say frequently that Parakeet gets wrong is a candidate — internal project names, oddly-spelled company names, jargon.
-
-> **Note:** A future improvement is to push custom vocab into Parakeet itself via FluidAudio's `--custom-vocab` flag, which biases the STT decoder at the source instead of fixing things downstream. The cleanup prompt is a workaround until that lands.
+> **Note:** Biasing the STT decoder at the source (vs. fixing things downstream in the LLM prompt) would be cleaner. Not wired up yet — current FluidAudio streaming Nemotron path doesn't expose a custom-vocab knob from the daemon side.
 
 ## The hotkey
 
-Change the Hammerspoon binding by editing `~/.hammerspoon/init.lua`:
+Change the Hammerspoon binding by editing the `hs.hotkey.bind({"ctrl", "alt"}, "y", ...)` line in `~/.hammerspoon/init.lua`. Modifier list and key follow `hs.hotkey.bind` rules. Avoid the macOS `fn` key — it's not a normal Cocoa modifier and requires `hs.eventtap` instead of `hs.hotkey`, which is fussier. Full init.lua template lives in [`docs/installation.md`](installation.md#hammerspoon-push-to-talk).
 
-```lua
-hs.hotkey.bind({"ctrl", "alt"}, "y", ...)   -- the default
-hs.hotkey.bind({"cmd", "shift"}, "d", ...)  -- example: Cmd+Shift+D
+## The STT model
+
+The streaming STT engine is hard-coded in `swift/yappr-stt-daemon/Sources/YapprSttDaemon/Daemon.swift`:
+
+```swift
+static let chunkSize: NemotronChunkSize = .ms560
+static let cacheSubdir = "560ms"
 ```
 
-Anything `hs.hotkey.bind` accepts works. Avoid the macOS `fn` key — it's not a normal Cocoa modifier and requires `hs.eventtap` instead of `hs.hotkey`, which is fussier.
+There is no runtime flag — switching engines is an edit-and-rebuild. The daemon's `Package.swift` depends on `vendor/FluidAudio` for the underlying Nemotron model wrappers, so any swap is limited to what FluidAudio exposes (other `NemotronChunkSize` values, or a different FluidAudio ASR manager).
 
-## The model
+To change it:
 
-Point `configs/default.json`'s `llm.model_name` at any other MLX model on Hugging Face, restart the server with that model:
+```bash
+# 1. Edit Daemon.swift — update chunkSize and cacheSubdir.
+# 2. Rebuild.
+cd ~/toolkit/yappr/swift/yappr-stt-daemon
+swift build -c release
+
+# 3. Re-codesign (TCC keys mic permission to the signature).
+codesign --force --sign - .build/release/YapprSttDaemon
+
+# 4. Restart the daemon.
+pkill -x YapprSttDaemon
+./.build/release/YapprSttDaemon
+```
+
+The first run after a model change populates `~/.cache/fluidaudio/models/nemotron-streaming/<cacheSubdir>/`; subsequent starts are fast.
+
+## The cleanup LLM
+
+Point `configs/active.json`'s `llm.model_name` at any other MLX model on Hugging Face, and `llm.url` at whatever serves it. For a local on-device swap, restart `yappr-mlx-server` with the new model:
 
 ```bash
 yappr-mlx-server \
@@ -58,6 +79,8 @@ yappr-mlx-server \
 
 Bigger model = better cleanup quality, slower TTFT. The prefix caching trick still works as long as it's a standard full-attention transformer.
 
+Any OpenAI-compatible chat-completions endpoint works — point `llm.url` at a remote gateway, llama.cpp, vLLM, etc. Vendor-specific knobs go in `llm.extra_params`.
+
 Configs are the right place for this — make a new one rather than editing `default.json` if you want to A/B:
 
 ```bash
@@ -66,41 +89,4 @@ cp configs/default.json configs/v4-qwen-4b.json
 yappr-config use v4-qwen-4b
 # dictate a few times, then:
 yappr-stats --compare-configs default v4-qwen-4b
-```
-
-## STT options
-
-By default `bin/yappr` calls FluidAudio with:
-
-```
-fluidaudiocli transcribe <audio> --model-version v2 --language en --output-json <json>
-```
-
-- `--model-version v2` is Parakeet v2 (English-only). Swap to `v3` for multilingual. Slower.
-- `--language en` is a hint to Parakeet. Adjust if you switch model versions.
-
-These are currently hardcoded in `bin/yappr` — pull request welcome to move them into the config schema.
-
-## Audio device
-
-`AUDIO_DEVICE = ":1"` in `init.lua` refers to AVFoundation device index 1 (typically the MacBook Pro Microphone). To use a different mic:
-
-```bash
-ffmpeg -f avfoundation -list_devices true -i ""
-```
-
-Lists all audio inputs by index. Pick the one that matches your mic, then update `AUDIO_DEVICE`.
-
-In CLI mode (no Hammerspoon), the env var is `YAPPR_COREAUDIO_DEVICE`. Default is `"MacBook Pro Microphone"` by name. Override:
-
-```bash
-YAPPR_COREAUDIO_DEVICE="External Mic" yappr
-```
-
-## Recording duration in CLI mode
-
-Default is 10 seconds:
-
-```bash
-YAPPR_RECORD_SECS=8 yappr   # 8-second capture
 ```

@@ -1,6 +1,8 @@
-# ⚙️ Configuration
+# Configuration
 
 Configs are JSON files in `configs/`. `configs/active.json` is an atomic symlink to whichever one is current. Switching is one command.
+
+Configs in `configs/` only describe the **LLM cleanup stage**. The streaming-STT parameters (model, chunk size, HAL buffer) live in the Swift daemon and are intentionally not exposed as config knobs — see [Daemon-side constants](#daemon-side-constants) below.
 
 ## The `yappr-config` CLI
 
@@ -19,26 +21,18 @@ Example `list` output:
 ```
 Configs in /Users/you/toolkit/yappr/configs:
 
-* default              Default baseline: Qwen3-1.7B-4bit via custom yappr-mlx-server with explicit prefix caching (port 8081).
+* default              Streaming STT (Nemotron 0.6B @ 560ms via yappr-stt-daemon) + Qwen3-1.7B-4bit cleanup via yappr-mlx-server.
   v1-baseline          Qwen3-1.7B Q8 via llama-server. The first working cleanup setup.
-  v2-mlx-q4            Qwen3-1.7B 4-bit via mlx_lm.server. Default since 2026-05-17.
+  v2-mlx-q4            Qwen3-1.7B 4-bit via mlx_lm.server. Stock MLX server, no prefix caching.
 
 Active: default
 ```
-
-## Configs shipped
-
-| Name           | Backend            | Model                          | Port  | Notes                                          |
-|----------------|--------------------|--------------------------------|-------|------------------------------------------------|
-| `default`      | `yappr-mlx-server` | mlx-community/Qwen3-1.7B-4bit  | 8081  | **Recommended.** Prefix-cached.                |
-| `v1-baseline`  | `llama-server`     | Qwen/Qwen3-1.7B-GGUF:Q8_0      | 8080  | Original setup, kept for comparison.           |
-| `v2-mlx-q4`    | `mlx_lm.server`    | mlx-community/Qwen3-1.7B-4bit  | 8080  | Stock MLX server. **No prefix caching.**       |
 
 ## Config schema
 
 ```jsonc
 {
-  "version": "default",                            // human label, matches filename
+  "version": "v3-streaming",                       // human label, matches filename
   "description": "...",                            // shown in `yappr-config list`
   "backend": "yappr-mlx-server",                   // informational
   "llm": {
@@ -54,24 +48,43 @@ Active: default
 }
 ```
 
+All `llm.*` fields are read by `bin/yappr` at call-time. `extra_params` is merged into the chat-completions body alongside `max_tokens` and `temperature` — use it for backend-specific knobs (e.g. MLX `chat_template_kwargs`).
+
+`prompt_file` points at the cleanup-LLM system prompt; `prompts/cleanup.txt` is the shipped one.
+
 ### Hashing
 
 Every metric record stamps:
-- `config_version`: the label
-- `config_hash`: SHA-256 of the normalized JSON (sorted keys) — captures structural changes
-- `prompt_hash`: SHA-256 of the prompt file content — captures prompt edits independently
 
-So if you edit the prompt without bumping `config_version`, the metrics still distinguish before-edit from after-edit runs.
+| Field            | Source                                                       |
+|------------------|--------------------------------------------------------------|
+| `config_version` | the `version` field (label)                                  |
+| `config_hash`    | SHA-256 of the normalized JSON (sorted keys)                 |
+| `prompt_hash`    | SHA-256 of the prompt file content                           |
+
+Prompt and config are hashed independently, so editing the prompt without bumping `config_version` still distinguishes before-edit from after-edit runs in the metrics.
+
+## Env vars
+
+Read by `bin/yappr` at call time:
+
+| Var             | Default                              | Purpose                                                                  |
+|-----------------|--------------------------------------|--------------------------------------------------------------------------|
+| `YAPPR_ROOT`    | `$HOME/toolkit/yappr`                | Repo root.                                                               |
+| `YAPPR_CONFIG`  | `$YAPPR_ROOT/configs/active.json`    | Path to active config. Override for one-off tests without swapping symlink. |
+| `YAPPR_QUIET`   | `0`                                  | `1` = stdout is just the streamed text, no end-of-run report. Hammerspoon sets this. |
+| `YAPPR_COPY`    | `0`                                  | `1` = also `pbcopy` the cleaned text.                                    |
+| `YAPPR_DEBUG`   | `1`                                  | `1` = verbose log lines to the per-run log file.                         |
 
 ## Adding a new config
 
-Just write a new JSON file in `configs/` matching the schema, then switch:
+Drop a new JSON file in `configs/` matching the schema, then switch:
 
 ```bash
-cat > configs/v3-spec-decoding.json <<'EOF'
+cat > configs/v4-spec-decoding.json <<'EOF'
 {
-  "version": "v3-spec-decoding",
-  "description": "Test config for speculative decoding (when mlx-lm Qwen3 bug clears)",
+  "version": "v4-spec-decoding",
+  "description": "Speculative decoding test (when mlx-lm Qwen3 bug clears)",
   "backend": "yappr-mlx-server-spec",
   "llm": {
     "url": "http://127.0.0.1:8082/v1/chat/completions",
@@ -86,23 +99,36 @@ cat > configs/v3-spec-decoding.json <<'EOF'
 }
 EOF
 
-yappr-config use v3-spec-decoding
+yappr-config use v4-spec-decoding
 ```
 
-Now every yappr run uses the new config and metrics will show the new `config_version`. A/B comparison:
+Every yappr run now stamps the new `config_version`. A/B compare:
 
 ```bash
-yappr-stats --compare-configs default v3-spec-decoding
+yappr-stats --compare-configs default v4-spec-decoding
 ```
 
 ## Active = symlink
 
 `configs/active.json` is a symlink. `yappr-config use NAME` does an atomic `ln -sfn NAME.json active.json`. The rest of yappr (and `yappr-mlx-server` when restarted) just reads `active.json`.
 
-You can also point at a config explicitly without changing the symlink:
+Point at a config explicitly without changing the symlink:
 
 ```bash
 YAPPR_CONFIG=~/toolkit/yappr/configs/v2-mlx-q4.json yappr
 ```
 
 Useful for one-off tests without disrupting your default.
+
+## Daemon-side constants
+
+The STT side of the pipeline lives in `swift/yappr-stt-daemon/`. Its parameters are **hard-coded in Swift** and require a rebuild to change — there are no env vars or config fields for them. This is deliberate (per "no config knobs in personal tools"): a config flag for every alternative keeps dead code alive, so the daemon commits to one set of values and the others are deleted.
+
+| Constant            | Value             | Where                                                                   |
+|---------------------|-------------------|-------------------------------------------------------------------------|
+| Model               | Nemotron 0.6B     | `swift/yappr-stt-daemon/Sources/YapprSttDaemon/Daemon.swift` (`chunkSize`, `cacheSubdir`) |
+| Chunk size          | 560 ms            | same                                                                    |
+| HAL buffer          | 256 frames        | `MicCapture.swift`                                                      |
+| Socket path         | `/tmp/yappr-stt.sock` | `Daemon.swift` (`socketPath`)                                       |
+
+To switch any of these: edit the constant, `swift build -c release`, restart the daemon.
