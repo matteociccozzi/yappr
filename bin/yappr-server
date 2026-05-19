@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# yappr-server — manage the MLX inference server lifecycle.
+# Usage: yappr server <start|stop|restart|status|logs|tail>
+set -euo pipefail
+# shellcheck source=bin/_yappr-paths.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_yappr-paths.sh"
+yappr_ensure_dirs
+
+MLX_SERVER_PID="$YAPPR_RUNTIME_DIR/mlx-server.pid"
+MLX_SERVER_LOG="$YAPPR_STATE_HOME/logs/mlx-server.log"
+MLX_LAUNCHER="$(dirname "${BASH_SOURCE[0]}")/yappr-mlx-server"
+CMD="${1:-status}"
+
+_pid_running() {
+  local pid
+  pid="$(cat "$MLX_SERVER_PID" 2>/dev/null)" || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+_read_config() {
+  MLX_MODEL="$(jq -r '.llm.model // "mlx-community/Qwen3-1.7B-4bit"' "$YAPPR_CONFIG" 2>/dev/null)"
+  MLX_PORT="$(jq -r '.llm.port // 8081' "$YAPPR_CONFIG" 2>/dev/null)"
+  PROMPT_FILE="$(jq -r '.prompt_file // "prompts/cleanup.txt"' "$YAPPR_CONFIG" 2>/dev/null)"
+  if [[ -f "$YAPPR_CONFIG_HOME/$PROMPT_FILE" ]]; then
+    PROMPT_FILE="$YAPPR_CONFIG_HOME/$PROMPT_FILE"
+  else
+    PROMPT_FILE="$YAPPR_ROOT/$PROMPT_FILE"
+  fi
+}
+
+_start() {
+  if _pid_running; then
+    echo "yappr server: already running (pid=$(cat "$MLX_SERVER_PID"))"
+    return 0
+  fi
+  [[ -x "$MLX_LAUNCHER" ]] || { echo "yappr server: launcher not found at $MLX_LAUNCHER" >&2; exit 1; }
+  _read_config
+  mkdir -p "$(dirname "$MLX_SERVER_LOG")"
+  nohup "$MLX_LAUNCHER" \
+    --model "$MLX_MODEL" \
+    --system-prompt-file "$PROMPT_FILE" \
+    --port "$MLX_PORT" \
+    >> "$MLX_SERVER_LOG" 2>&1 &
+  local bg_pid=$!
+  echo "$bg_pid" > "$MLX_SERVER_PID"
+  echo "yappr server: started (pid=$bg_pid, model=$MLX_MODEL, port=$MLX_PORT)"
+}
+
+_stop() {
+  if ! _pid_running; then
+    echo "yappr server: not running"
+    rm -f "$MLX_SERVER_PID"
+    return 0
+  fi
+  local pid
+  pid="$(cat "$MLX_SERVER_PID")"
+  kill -TERM "$pid" 2>/dev/null || true
+  local i
+  for i in $(seq 1 4); do
+    sleep 0.5
+    if ! kill -0 "$pid" 2>/dev/null; then
+      rm -f "$MLX_SERVER_PID"
+      echo "yappr server: stopped"
+      return 0
+    fi
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+  rm -f "$MLX_SERVER_PID"
+  echo "yappr server: force-killed"
+}
+
+case "$CMD" in
+  start)   _start ;;
+  stop)    _stop ;;
+  restart) _stop; sleep 0.5; _start ;;
+  status)
+    if _pid_running; then
+      echo "yappr server: running (pid=$(cat "$MLX_SERVER_PID"))"
+    else
+      echo "yappr server: not running"
+    fi
+    ;;
+  logs)  cat "$MLX_SERVER_LOG" 2>/dev/null || echo "(no log yet at $MLX_SERVER_LOG)" ;;
+  tail)  tail -F "$MLX_SERVER_LOG" 2>/dev/null ;;
+  *)
+    echo "Usage: yappr server <start|stop|restart|status|logs|tail>" >&2
+    exit 2
+    ;;
+esac
