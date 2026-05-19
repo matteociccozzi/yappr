@@ -1,0 +1,348 @@
+#!/usr/bin/env python3
+"""yappr-trace — view the timeline of recent yappr dictation sessions.
+
+Reads /tmp/yappr-trace.log (appended to by Hammerspoon, YapprSttConnect, and
+the daemon's MicCapture/Session) and prints session timelines with deltas.
+
+Each log row is:
+    <unix_microseconds> <source> <event> [extra_text...]
+
+A "session" is a contiguous run of events separated by < 10 seconds from
+each other. By default we show the most recent one.
+
+Usage:
+    yappr-trace                 # show last session as a phased timeline
+    yappr-trace --last N        # show the last N sessions
+    yappr-trace --all-sessions  # show every session in the log
+    yappr-trace --summary       # one tab-separated row per session
+    yappr-trace --tail          # follow the file like tail -F
+    yappr-trace --raw           # dump raw rows, no formatting
+    yappr-trace --clear         # truncate the log (asks; -y skips prompt)
+"""
+
+import argparse
+import os
+import sys
+import time
+
+LOG_PATH = "/tmp/yappr-trace.log"
+SESSION_GAP_US = 10_000_000  # 10 s
+
+# Phase grouping: each session's events are bucketed into ordered phases.
+PHASES = ["hammerspoon", "spawn", "daemon-setup", "capture", "finalize"]
+
+
+def read_rows(path):
+    rows = []
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                parts = line.split(" ", 2)
+                if len(parts) < 2:
+                    continue
+                try:
+                    us = int(parts[0])
+                except ValueError:
+                    continue
+                source = parts[1]
+                rest = parts[2] if len(parts) > 2 else ""
+                event, _, details = rest.partition(" ")
+                rows.append((us, source, event, details))
+    except FileNotFoundError:
+        pass
+    return rows
+
+
+def cluster_rows(rows, gap_us=SESSION_GAP_US):
+    clusters = []
+    cur = []
+    for row in rows:
+        if cur and row[0] - cur[-1][0] > gap_us:
+            clusters.append(cur)
+            cur = []
+        cur.append(row)
+    if cur:
+        clusters.append(cur)
+    return clusters
+
+
+def parse_kv(details):
+    """Parse 'k=v k2=v2' detail string into a dict; ignore unparseable tokens."""
+    out = {}
+    for tok in details.split():
+        if "=" in tok:
+            k, _, v = tok.partition("=")
+            out[k] = v
+    return out
+
+
+def phase_for(event, src, current_phase):
+    """Assign an event to a phase. `current_phase` lets us be sticky on edges."""
+    if src == "hs":
+        return "hammerspoon"
+    if src == "swift":
+        # swift_recv_done arrives at the very end of the session.
+        if event == "swift_recv_done":
+            return "finalize"
+        return "spawn"
+    # daemon events
+    if event in ("daemon_accept", "daemon_manager_reset_done",
+                 "daemon_begin_session_call", "daemon_engine_start_call",
+                 "daemon_engine_start_return", "daemon_begin_session_return"):
+        return "daemon-setup"
+    if event in ("daemon_first_tap", "daemon_eof_received"):
+        return "capture"
+    if event in ("daemon_engine_stop_returned", "daemon_finish_call",
+                 "daemon_finish_return", "daemon_write_done"):
+        return "finalize"
+    # Unknown daemon event — stay in whatever phase we're already in,
+    # else default to daemon-setup.
+    return current_phase or "daemon-setup"
+
+
+def session_metrics(cluster):
+    """Compute per-session derived metrics. Returns a dict with keys:
+       hs_press_us, swift_main_us, engine_start_return_us, engine_stop_returned_us,
+       eof_us, audio_ms, transcript_len, total_held_ms, front_loss_ms, end_loss_ms.
+       Missing entries are None.
+    """
+    m = {
+        "hs_press_us": None,
+        "hs_release_us": None,
+        "swift_main_us": None,
+        "engine_start_return_us": None,
+        "engine_stop_returned_us": None,
+        "eof_us": None,
+        "audio_ms": None,
+        "transcript_len": None,
+    }
+    for us, src, event, det in cluster:
+        if event == "hs_press" and m["hs_press_us"] is None:
+            m["hs_press_us"] = us
+        elif event == "hs_release":
+            m["hs_release_us"] = us
+        elif event == "swift_main" and m["swift_main_us"] is None:
+            m["swift_main_us"] = us
+        elif event == "daemon_engine_start_return" and m["engine_start_return_us"] is None:
+            m["engine_start_return_us"] = us
+        elif event == "daemon_engine_stop_returned":
+            m["engine_stop_returned_us"] = us
+        elif event == "daemon_eof_received":
+            m["eof_us"] = us
+        elif event == "daemon_write_done":
+            kv = parse_kv(det)
+            if "audio_ms" in kv:
+                try:
+                    m["audio_ms"] = int(kv["audio_ms"])
+                except ValueError:
+                    pass
+        elif event == "daemon_finish_return":
+            kv = parse_kv(det)
+            if "len" in kv:
+                try:
+                    m["transcript_len"] = int(kv["len"])
+                except ValueError:
+                    pass
+
+    # Derived.
+    anchor = m["hs_press_us"] if m["hs_press_us"] is not None else m["swift_main_us"]
+    if anchor is not None and m["engine_start_return_us"] is not None:
+        m["front_loss_ms"] = (m["engine_start_return_us"] - anchor) / 1000.0
+    else:
+        m["front_loss_ms"] = None
+
+    if m["engine_start_return_us"] is not None and m["engine_stop_returned_us"] is not None \
+            and m["audio_ms"] is not None:
+        engine_window_ms = (m["engine_stop_returned_us"] - m["engine_start_return_us"]) / 1000.0
+        m["end_loss_ms"] = engine_window_ms - m["audio_ms"]
+    else:
+        m["end_loss_ms"] = None
+
+    if m["hs_press_us"] is not None and m["hs_release_us"] is not None:
+        m["total_held_ms"] = (m["hs_release_us"] - m["hs_press_us"]) / 1000.0
+    else:
+        m["total_held_ms"] = None
+
+    return m
+
+
+def cluster_start_iso(cluster):
+    """Best-effort wall-clock label for a cluster (local time)."""
+    if not cluster:
+        return "?"
+    us = cluster[0][0]
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(us / 1_000_000))
+
+
+def format_cluster(cluster, *, header=None):
+    if not cluster:
+        return ""
+    # Anchor t=0 to hs_press if present, else first row.
+    t0 = cluster[0][0]
+    for us, _src, event, _det in cluster:
+        if event == "hs_press":
+            t0 = us
+            break
+
+    out = []
+    if header:
+        out.append(header)
+    out.append(f"{'event':<32} {'source':<8} {'+ms':>9}   {'Δms':>7}   details")
+    out.append("-" * 80)
+
+    prev_us = t0
+    current_phase = None
+    for us, src, event, det in cluster:
+        ph = phase_for(event, src, current_phase)
+        if ph != current_phase:
+            out.append(f"--- {ph} ---")
+            current_phase = ph
+        rel = (us - t0) / 1000.0
+        delta = (us - prev_us) / 1000.0
+        out.append(f"{event:<32} {src:<8} {rel:>9.2f}   {delta:>7.2f}   {det}")
+        prev_us = us
+    return "\n".join(out)
+
+
+def format_summary(clusters):
+    """Tab-separated, grep-friendly one-line-per-session report."""
+    out = []
+    header = "\t".join([
+        "#", "when", "events",
+        "front_ms", "end_ms", "held_ms", "audio_ms", "len",
+    ])
+    out.append(header)
+    for i, c in enumerate(clusters):
+        m = session_metrics(c)
+        fields = [
+            str(i + 1),
+            cluster_start_iso(c),
+            str(len(c)),
+            f"{m['front_loss_ms']:.1f}" if m["front_loss_ms"] is not None else "-",
+            f"{m['end_loss_ms']:.1f}" if m["end_loss_ms"] is not None else "-",
+            f"{m['total_held_ms']:.1f}" if m["total_held_ms"] is not None else "-",
+            str(m["audio_ms"]) if m["audio_ms"] is not None else "-",
+            str(m["transcript_len"]) if m["transcript_len"] is not None else "-",
+        ]
+        out.append("\t".join(fields))
+    return "\n".join(out)
+
+
+def cmd_clear(skip_prompt=False):
+    if not os.path.exists(LOG_PATH):
+        print(f"Nothing to clear — {LOG_PATH} doesn't exist.")
+        return 0
+    size = os.path.getsize(LOG_PATH)
+    rows = read_rows(LOG_PATH)
+    print(f"{LOG_PATH}: {len(rows)} rows, {size} bytes.")
+    if not skip_prompt:
+        ans = input("Truncate this file? [y/N] ")
+        if ans.strip().lower() not in ("y", "yes"):
+            print("Aborted.")
+            return 1
+    with open(LOG_PATH, "w"):
+        pass
+    print(f"Truncated {LOG_PATH}.")
+    return 0
+
+
+def cmd_tail():
+    last_size = 0
+    try:
+        with open(LOG_PATH) as f:
+            f.seek(0, 2)
+            last_size = f.tell()
+    except FileNotFoundError:
+        pass
+    try:
+        while True:
+            try:
+                with open(LOG_PATH) as f:
+                    f.seek(last_size)
+                    new = f.read()
+                    if new:
+                        sys.stdout.write(new)
+                        sys.stdout.flush()
+                    last_size = f.tell()
+            except FileNotFoundError:
+                pass
+            time.sleep(0.2)
+    except KeyboardInterrupt:
+        return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("-n", "--last", type=int, default=1, metavar="N",
+                    help="show the last N sessions (default: 1)")
+    ap.add_argument("--all-sessions", action="store_true",
+                    help="show every session in the log (overrides --last)")
+    ap.add_argument("--summary", action="store_true",
+                    help="one tab-separated row per session with derived metrics")
+    ap.add_argument("--tail", action="store_true",
+                    help="follow the file (like tail -F)")
+    ap.add_argument("--raw", action="store_true",
+                    help="dump raw rows without grouping/deltas")
+    ap.add_argument("--clear", action="store_true",
+                    help=f"truncate {LOG_PATH} (asks unless -y)")
+    ap.add_argument("-y", "--yes", action="store_true",
+                    help="skip the confirmation prompt for --clear")
+    args = ap.parse_args()
+
+    if args.clear:
+        return cmd_clear(skip_prompt=args.yes)
+
+    if args.tail:
+        return cmd_tail()
+
+    rows = read_rows(LOG_PATH)
+    if not rows:
+        print(f"(no rows in {LOG_PATH}; press the hotkey and try again)")
+        return 0
+
+    if args.raw:
+        for us, src, event, det in rows:
+            print(f"{us} {src} {event} {det}")
+        return 0
+
+    clusters = cluster_rows(rows)
+    if not clusters:
+        print("(no sessions found)")
+        return 0
+
+    if args.summary:
+        selected = clusters if args.all_sessions else clusters[-args.last:]
+        print(format_summary(selected))
+        return 0
+
+    if args.all_sessions:
+        for i, c in enumerate(clusters):
+            label = cluster_start_iso(c)
+            print(format_cluster(
+                c, header=f"=== session {i+1} of {len(clusters)} — {label} ({len(c)} events) ==="
+            ))
+            print()
+        return 0
+
+    n = max(1, args.last)
+    selected = clusters[-n:]
+    base = len(clusters) - n
+    for i, c in enumerate(selected):
+        label = cluster_start_iso(c)
+        idx = base + i + 1
+        print(format_cluster(
+            c, header=f"=== session {idx} of {len(clusters)} — {label} ({len(c)} events) ==="
+        ))
+        if i != len(selected) - 1:
+            print()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)
