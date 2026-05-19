@@ -1,8 +1,8 @@
+# 🎙️ yappr
+
 <p align="center">
   <img src="docs/yappr-logo.gif" alt="yappr" width="200">
 </p>
-
-# 🎙️ yappr
 
 > **Local, private, low-latency voice dictation for macOS.** Hold a hotkey, talk, release — cleaned-up text streams onto your screen at the cursor. Everything runs on-device on Apple Silicon. No network, no clipboard, no cloud.
 
