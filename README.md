@@ -72,56 +72,21 @@ This is the part that makes yappr feel like *dictation*, not just transcription.
 
 ## 🚀 Quick install
 
-Requires macOS on Apple Silicon (M1/M2/M3/M4). Full guide: [`docs/installation.md`](docs/installation.md).
+macOS on Apple Silicon (M1/M2/M3/M4). Three lines:
 
 ```bash
-# 1. Clone
 git clone https://github.com/matteociccozzi/yappr.git ~/toolkit/yappr
 cd ~/toolkit/yappr
-
-# 2. Homebrew deps (no ffmpeg/sox — the daemon owns the mic now)
-brew install jq python@3.12 uv
-brew install --cask hammerspoon
-
-# 3. MLX runtime
-uv tool install mlx-lm
-
-# 4. Vendor FluidAudio (Swift package dep of the daemon)
-git clone https://github.com/FluidInference/FluidAudio.git vendor/FluidAudio
-
-# 5. Build the STT daemon + socket client + ad-hoc codesign
-#    (codesign is required so TCC remembers the mic grant across rebuilds)
-cd swift/yappr-stt-daemon
-swift build -c release
-codesign --force --sign - .build/release/YapprSttDaemon
-cd -
-
-# 6. PATH
-echo 'export PATH="$HOME/toolkit/yappr/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
-
-# 7. Start the daemon (keep it running — load it via LaunchAgent or a tmux pane)
-swift/yappr-stt-daemon/.build/release/YapprSttDaemon &
-
-# 8. Start the MLX cleanup server (in its own terminal)
-yappr-mlx-server \
-    --model              mlx-community/Qwen3-1.7B-4bit \
-    --system-prompt-file ~/toolkit/yappr/prompts/cleanup.txt \
-    --host 127.0.0.1 --port 8081
+./scripts/install.sh
 ```
 
-Then drop the Hammerspoon `init.lua` snippet from [`docs/installation.md#7-set-up-hammerspoon-optional-but-recommended`](docs/installation.md) into `~/.hammerspoon/init.lua` and reload. Grant **Accessibility** + **Input Monitoring** permissions.
+The script is idempotent and handles dependencies, the Swift build, codesigning, and PATH setup. Three permissions it **can't** grant for you (macOS will prompt):
 
-### Smoke test
+- 🎙️ Microphone access for the daemon (system dialog on first launch)
+- ⌨️ Accessibility + Input Monitoring for Hammerspoon (push-to-talk)
+- 🧠 LLM endpoint configuration (edit `configs/active.json`)
 
-```bash
-yappr-config list                                  # 'default' should be marked active
-curl -s http://127.0.0.1:8081/health | jq          # cleanup server alive?
-[[ -S /tmp/yappr-stt.sock ]] && echo "daemon up"   # STT daemon listening?
-yappr-trace tail                                   # watch the end-to-end trace log
-```
-
-Then click into any text field, **hold Ctrl+Option+Y**, say *"um so like testing yappr one two three"*, release. The cleaned text streams in. `yappr-trace` will show one row per stage (Hammerspoon → `YapprSttConnect` → daemon → cleanup), all keyed off `/tmp/yappr-trace.log`.
+Full step-by-step walkthrough: [`docs/installation.md`](docs/installation.md).
 
 ---
 
