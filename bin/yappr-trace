@@ -18,6 +18,9 @@ Usage:
     yappr-trace --tail          # follow the file like tail -F
     yappr-trace --raw           # dump raw rows, no formatting
     yappr-trace --clear         # truncate the log (asks; -y skips prompt)
+
+ANSI color is on when stdout is a TTY and NO_COLOR is unset.
+Pass --no-color to force plain output; piping auto-disables.
 """
 
 import argparse
@@ -30,6 +33,89 @@ SESSION_GAP_US = 10_000_000  # 10 s
 
 # Phase grouping: each session's events are bucketed into ordered phases.
 PHASES = ["hammerspoon", "spawn", "daemon-setup", "capture", "finalize"]
+
+# ----------------------------------------------------------------------------
+# Color support
+# ----------------------------------------------------------------------------
+# Set by main() after argument parsing. Auto-disabled when stdout is piped, or
+# when NO_COLOR is set, or when --no-color is passed. The helpers below are
+# no-ops when _use_color is False, so callers don't need to branch.
+
+_use_color = False
+
+BOLD = "\x1b[1m"
+DIM = "\x1b[2m"
+RESET = "\x1b[0m"
+RED = "\x1b[31m"
+GREEN = "\x1b[32m"
+YELLOW = "\x1b[33m"
+MAGENTA = "\x1b[35m"
+CYAN = "\x1b[36m"
+
+
+def _wrap(codes, text):
+    """Apply ANSI codes around text if color is enabled; passthrough otherwise."""
+    return f"{codes}{text}{RESET}" if _use_color else text
+
+
+def c_source(src):
+    """Pad source to 8 chars and color it: hs=magenta, swift=cyan, daemon=green."""
+    padded = f"{src:<8}"
+    color = {"hs": MAGENTA, "swift": CYAN, "daemon": GREEN}.get(src, "")
+    return _wrap(color, padded) if color else padded
+
+
+def c_delta(delta_ms):
+    """Right-align delta to 7.2f and color by latency band:
+       < 50 ms  → dim (mundane)
+       50-200   → yellow (notable)
+       >= 200   → red + bold (interesting)
+    """
+    padded = f"{delta_ms:>7.2f}"
+    if delta_ms >= 200.0:
+        return _wrap(RED + BOLD, padded)
+    if delta_ms >= 50.0:
+        return _wrap(YELLOW, padded)
+    return _wrap(DIM, padded)
+
+
+def c_rel(rel_ms):
+    """Right-align cumulative offset; always dim (reference info, not insight)."""
+    padded = f"{rel_ms:>9.2f}"
+    return _wrap(DIM, padded)
+
+
+def c_phase(name):
+    """Phase divider: bold cyan."""
+    return _wrap(BOLD + CYAN, f"--- {name} ---")
+
+
+def c_header(text):
+    """Session header: bold."""
+    return _wrap(BOLD, text)
+
+
+def c_summary_metric(value_str, threshold_band=None):
+    """Color a summary-row metric. `threshold_band` is one of:
+       'latency' — apply the same red/yellow/dim bands as c_delta
+       'dim'     — reference info (audio_ms, held_ms, len)
+       None      — no color
+    """
+    if threshold_band is None:
+        return value_str
+    if threshold_band == "dim":
+        return _wrap(DIM, value_str)
+    if threshold_band == "latency":
+        try:
+            v = float(value_str)
+        except ValueError:
+            return value_str
+        if v >= 200.0:
+            return _wrap(RED + BOLD, value_str)
+        if v >= 50.0:
+            return _wrap(YELLOW, value_str)
+        return _wrap(DIM, value_str)
+    return value_str
 
 
 def read_rows(path):
@@ -189,43 +275,54 @@ def format_cluster(cluster, *, header=None):
 
     out = []
     if header:
-        out.append(header)
-    out.append(f"{'event':<32} {'source':<8} {'+ms':>9}   {'Δms':>7}   details")
-    out.append("-" * 80)
+        out.append(c_header(header))
+    col_header = f"{'event':<32} {'source':<8} {'+ms':>9}   {'Δms':>7}   details"
+    out.append(_wrap(BOLD + DIM, col_header))
+    out.append(_wrap(DIM, "-" * 80))
 
     prev_us = t0
     current_phase = None
     for us, src, event, det in cluster:
         ph = phase_for(event, src, current_phase)
         if ph != current_phase:
-            out.append(f"--- {ph} ---")
+            out.append(c_phase(ph))
             current_phase = ph
         rel = (us - t0) / 1000.0
         delta = (us - prev_us) / 1000.0
-        out.append(f"{event:<32} {src:<8} {rel:>9.2f}   {delta:>7.2f}   {det}")
+        # event column is plain (the event name is its own identifier);
+        # source / +ms / Δms are colored per their helpers.
+        out.append(
+            f"{event:<32} {c_source(src)} {c_rel(rel)}   {c_delta(delta)}   {det}"
+        )
         prev_us = us
     return "\n".join(out)
 
 
 def format_summary(clusters):
-    """Tab-separated, grep-friendly one-line-per-session report."""
+    """Tab-separated, grep-friendly one-line-per-session report.
+    When stdout is a TTY, numeric columns get latency-band colors;
+    when piped, colors auto-disable so awk/grep still works cleanly.
+    """
     out = []
-    header = "\t".join([
-        "#", "when", "events",
-        "front_ms", "end_ms", "held_ms", "audio_ms", "len",
-    ])
-    out.append(header)
+    header_cols = ["#", "when", "events",
+                   "front_ms", "end_ms", "held_ms", "audio_ms", "len"]
+    out.append("\t".join(_wrap(BOLD + DIM, c) for c in header_cols))
     for i, c in enumerate(clusters):
         m = session_metrics(c)
+        front = f"{m['front_loss_ms']:.1f}" if m["front_loss_ms"] is not None else "-"
+        end = f"{m['end_loss_ms']:.1f}" if m["end_loss_ms"] is not None else "-"
+        held = f"{m['total_held_ms']:.1f}" if m["total_held_ms"] is not None else "-"
+        audio = str(m["audio_ms"]) if m["audio_ms"] is not None else "-"
+        tlen = str(m["transcript_len"]) if m["transcript_len"] is not None else "-"
         fields = [
             str(i + 1),
             cluster_start_iso(c),
             str(len(c)),
-            f"{m['front_loss_ms']:.1f}" if m["front_loss_ms"] is not None else "-",
-            f"{m['end_loss_ms']:.1f}" if m["end_loss_ms"] is not None else "-",
-            f"{m['total_held_ms']:.1f}" if m["total_held_ms"] is not None else "-",
-            str(m["audio_ms"]) if m["audio_ms"] is not None else "-",
-            str(m["transcript_len"]) if m["transcript_len"] is not None else "-",
+            c_summary_metric(front, "latency") if front != "-" else front,
+            c_summary_metric(end, "latency") if end != "-" else end,
+            c_summary_metric(held, "dim") if held != "-" else held,
+            c_summary_metric(audio, "dim") if audio != "-" else audio,
+            c_summary_metric(tlen, "dim") if tlen != "-" else tlen,
         ]
         out.append("\t".join(fields))
     return "\n".join(out)
@@ -293,7 +390,22 @@ def main():
                     help=f"truncate {LOG_PATH} (asks unless -y)")
     ap.add_argument("-y", "--yes", action="store_true",
                     help="skip the confirmation prompt for --clear")
+    ap.add_argument("--no-color", action="store_true",
+                    help="disable ANSI color even on a TTY")
     args = ap.parse_args()
+
+    # Resolve whether to emit ANSI escape codes. Auto-off if stdout is piped
+    # (so `yappr-trace | grep ...` Just Works), if NO_COLOR is in the env, or
+    # if --no-color was passed. We also leave --raw and --tail uncolored —
+    # those modes exist for machine consumption / live streaming.
+    global _use_color
+    _use_color = (
+        sys.stdout.isatty()
+        and not os.environ.get("NO_COLOR")
+        and not args.no_color
+        and not args.raw
+        and not args.tail
+    )
 
     if args.clear:
         return cmd_clear(skip_prompt=args.yes)
