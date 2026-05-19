@@ -79,8 +79,8 @@ This is the part that makes yappr feel like *dictation*, not just transcription.
 macOS on Apple Silicon (M1/M2/M3/M4). Three lines:
 
 ```bash
-git clone https://github.com/matteociccozzi/yappr.git ~/toolkit/yappr
-cd ~/toolkit/yappr
+git clone --recurse-submodules https://github.com/matteociccozzi/yappr.git
+cd yappr
 ./scripts/install.sh
 ```
 

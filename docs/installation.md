@@ -20,10 +20,13 @@ Everything else is handled by the install script.
 ## Recommended: one-shot install
 
 ```bash
-git clone https://github.com/matteociccozzi/yappr.git ~/toolkit/yappr
-cd ~/toolkit/yappr
+git clone --recurse-submodules https://github.com/matteociccozzi/yappr.git
+cd yappr
 ./scripts/install.sh
 ```
+
+> If you already cloned without `--recurse-submodules`, run:
+> `git submodule update --init --recursive`
 
 The script is idempotent — safe to re-run. It will prompt before each
 optional step.
@@ -71,9 +74,12 @@ For when you want to know every step. This mirrors what the script does.
 ### 1. Clone
 
 ```bash
-git clone https://github.com/matteociccozzi/yappr.git ~/toolkit/yappr
-cd ~/toolkit/yappr
+git clone --recurse-submodules https://github.com/matteociccozzi/yappr.git
+cd yappr
 ```
+
+> If you already cloned without `--recurse-submodules`, run:
+> `git submodule update --init --recursive`
 
 ### 2. Xcode command-line tools
 
@@ -141,9 +147,11 @@ for mic access. Ad-hoc signing fixes that.
 ### 8. Add `yappr/bin/` to your PATH
 
 ```bash
-echo 'export PATH="$HOME/toolkit/yappr/bin:$PATH"' >> ~/.zshrc
+echo 'export PATH="$YAPPR_ROOT/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
+
+(Replace `$YAPPR_ROOT` with the absolute path where you cloned yappr.)
 
 (Or `~/.bashrc`, or the fish equivalent.)
 
@@ -154,7 +162,7 @@ source ~/.zshrc
 Start the daemon for the first time:
 
 ```bash
-~/toolkit/yappr/swift/yappr-stt-daemon/.build/release/YapprSttDaemon
+$YAPPR_ROOT/swift/yappr-stt-daemon/.build/release/YapprSttDaemon
 ```
 
 macOS shows a Microphone permission dialog during the daemon's startup
@@ -184,7 +192,7 @@ Drop this in:
 -- transcript. bin/yappr then runs the cleanup LLM and streams cleaned tokens
 -- to stdout, which we type at the cursor.
 
-local YAPPR_BIN = os.getenv("HOME") .. "/toolkit/yappr/bin/yappr"
+local YAPPR_BIN = os.getenv("HOME") .. "/yappr/bin/yappr"  -- adjust path to your clone location
 
 local recording = false  -- guard against keyDown autorepeat
 local task = nil
@@ -267,7 +275,7 @@ at a local MLX server on `127.0.0.1:8081`. To run one:
 ```bash
 yappr-mlx-server \
     --model              mlx-community/Qwen3-1.7B-4bit \
-    --system-prompt-file ~/toolkit/yappr/prompts/cleanup.txt \
+    --system-prompt-file $YAPPR_ROOT/prompts/cleanup.txt \
     --host 127.0.0.1 --port 8081
 ```
 
@@ -279,7 +287,7 @@ LLM, etc.), edit `configs/active.json`. See [`docs/configuration.md`](configurat
 In one terminal, start the daemon and watch it boot:
 
 ```bash
-~/toolkit/yappr/swift/yappr-stt-daemon/.build/release/YapprSttDaemon
+$YAPPR_ROOT/swift/yappr-stt-daemon/.build/release/YapprSttDaemon
 ```
 
 You should see log lines for model load, mic engine prepare + warm-up, and
