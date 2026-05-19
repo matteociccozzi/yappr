@@ -5,8 +5,7 @@ metrics/
 metrics.bak.*/
 
 
-# Swift build output for the local daemon
-swift/yappr-stt-daemon/.build/
+# Swift package manager metadata (build artifacts now go outside the source tree)
 swift/yappr-stt-daemon/.swiftpm/
 swift/yappr-stt-daemon/Package.resolved
 

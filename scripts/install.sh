@@ -25,8 +25,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 YAPPR_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DAEMON_DIR="$YAPPR_ROOT/swift/yappr-stt-daemon"
-DAEMON_BIN="$DAEMON_DIR/.build/release/YapprSttDaemon"
-CONNECT_BIN="$DAEMON_DIR/.build/release/YapprSttConnect"
+YAPPR_DATA_HOME="${YAPPR_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/yappr}"
+DAEMON_BIN="$YAPPR_DATA_HOME/build/yappr-stt-daemon/release/YapprSttDaemon"
+CONNECT_BIN="$YAPPR_DATA_HOME/build/yappr-stt-daemon/release/YapprSttConnect"
 
 REQUIRED_FORMULAS=("jq" "python@3.12")
 
@@ -280,7 +281,9 @@ fi
 
 if [[ $NEED_BUILD -eq 1 ]]; then
   info "Building (first build can take ~30s)..."
-  (cd "$DAEMON_DIR" && swift build -c release)
+  (cd "$DAEMON_DIR" && \
+    swift build -c release \
+      --scratch-path "$YAPPR_DATA_HOME/build/yappr-stt-daemon")
   ok "Built YapprSttDaemon"
   ok "Built YapprSttConnect"
 fi
