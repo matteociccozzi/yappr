@@ -7,6 +7,7 @@
 #   yappr-config use <NAME>            Switch active config (atomic symlink)
 #   yappr-config show [<NAME>]         Pretty-print a config (defaults to active)
 #   yappr-config diff <A> <B>          Show normalized diff between two configs
+#   yappr-config delete [-y] <NAME>... Delete config(s). Refuses the active config.
 #   yappr-config path                  Print configs directory path
 #
 # Configs live at $YAPPR_ROOT/configs/*.json (default ~/toolkit/yappr/configs).
@@ -139,12 +140,67 @@ cmd_diff() {
   diff -u <(jq -S . "$af") <(jq -S . "$bf") || true
 }
 
+cmd_delete() {
+  ensure_dir
+  local assume_yes=0
+  local names=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -y|--yes) assume_yes=1; shift ;;
+      -*)       die "unknown flag: $1 (usage: yappr-config delete [-y] <NAME>...)" ;;
+      *)        names+=("$1"); shift ;;
+    esac
+  done
+  [[ ${#names[@]} -gt 0 ]] || die "usage: yappr-config delete [-y] <NAME>..."
+
+  local active
+  active=$(active_name)
+
+  # Validate everything up front so we don't half-delete on a typo.
+  local targets=()
+  for name in "${names[@]}"; do
+    if [[ "$name" == "active" ]]; then
+      die "refusing to delete the 'active' symlink (use 'yappr-config use <NAME>' to switch first)"
+    fi
+    if [[ "$name" == "$active" ]]; then
+      die "refusing to delete the active config '$name'. Switch first: yappr-config use <other>"
+    fi
+    local target="$CONFIG_DIR/${name}.json"
+    [[ -f "$target" ]] || die "config not found: $target"
+    targets+=("$target")
+  done
+
+  # Confirm.
+  if [[ $assume_yes -eq 0 ]]; then
+    echo "${C_YELLOW}About to delete:${C_RESET}"
+    for t in "${targets[@]}"; do
+      echo "  ${C_DIM}-${C_RESET} $(basename "${t%.json}")"
+    done
+    read -p "Proceed? [y/N] " reply
+    case "$reply" in
+      [Yy]*) ;;
+      *) echo "Aborted."; return 0 ;;
+    esac
+  fi
+
+  for t in "${targets[@]}"; do
+    rm -f "$t"
+    echo "${C_GREEN}${C_BOLD}✓ deleted${C_RESET} $(basename "${t%.json}")"
+  done
+}
+
 cmd_path() {
   echo "$CONFIG_DIR"
 }
 
 usage() {
-  sed -n '2,16p' "$0" | sed 's/^# \?//'
+  # Print the top-of-file comment block as help, stopping at the first
+  # non-comment line (so the help output doesn't drift when the block grows).
+  awk '
+    /^#!/   { next }
+    /^#/    { sub(/^# ?/, ""); print; next }
+              { exit }
+  ' "$0"
 }
 
 main() {
@@ -156,6 +212,7 @@ main() {
     use)     cmd_use "$@" ;;
     show)    cmd_show "$@" ;;
     diff)    cmd_diff "$@" ;;
+    delete)  cmd_delete "$@" ;;
     path)    cmd_path ;;
     ""|-h|--help|help) usage ;;
     *)       die "unknown command: $cmd (try: yappr-config help)" ;;
