@@ -110,8 +110,8 @@
 
 set -uo pipefail   # NB: no -e — we want to keep running even if a stage soft-fails so we can see logs
 
-YAPPR_ROOT="${YAPPR_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-YAPPR_CONFIG="${YAPPR_CONFIG:-$YAPPR_ROOT/configs/active.json}"
+source "$(dirname "${BASH_SOURCE[0]}")/_yappr-paths.sh"
+yappr_ensure_dirs
 YAPPR_QUIET="${YAPPR_QUIET:-0}"   # 1 = only print cleaned text to stdout, all logs to file
 YAPPR_COPY="${YAPPR_COPY:-0}"     # 1 = also copy cleaned text to clipboard (pbcopy)
 
@@ -120,9 +120,9 @@ YAPPR_COPY="${YAPPR_COPY:-0}"     # 1 = also copy cleaned text to clipboard (pbc
 # THIS LINE means truncated audio. Bash startup is the only thing we cannot
 # avoid; everything else (config-load, jq, log file setup, curl health check)
 # is deferred until AFTER the helper is spawned and recording in background.
-if [[ ! -S /tmp/yappr-stt.sock ]]; then
-  echo "❌ daemon socket not found at /tmp/yappr-stt.sock" >&2
-  echo "   start it first: $YAPPR_ROOT/swift/yappr-stt-daemon/.build/release/YapprSttDaemon &" >&2
+if [[ ! -S "$YAPPR_SOCKET" ]]; then
+  echo "❌ daemon socket not found at $YAPPR_SOCKET" >&2
+  echo "   start it first: $(yappr_daemon_binary) &" >&2
   exit 1
 fi
 
@@ -134,14 +134,13 @@ STREAM_ERR=$(mktemp -t yappr-stream-err.XXXXXX)
 # (= Hammerspoon hotkey release) triggers the half-close. Swift binary
 # startup is ~3-5 ms vs python3's ~30-50 ms — the difference is audio we
 # would otherwise lose at the start of the dictation.
-"$YAPPR_ROOT/swift/yappr-stt-daemon/.build/release/YapprSttConnect" >"$STREAM_OUT" 2>"$STREAM_ERR" &
+"$(yappr_connect_binary)" >"$STREAM_OUT" 2>"$STREAM_ERR" &
 STREAM_PID=$!
 trap 'kill -TERM '"$STREAM_PID"' 2>/dev/null' TERM INT
 
 # --- everything below runs in parallel with the recording ---
 # The mic is open and capturing while bash does config-load + preflight.
 
-LOGS_DIR="$YAPPR_ROOT/logs"
 YAPPR_DEBUG="${YAPPR_DEBUG:-1}"
 
 # Load active cleanup config — all LLM-call params come from here
@@ -162,9 +161,7 @@ CONFIG_HASH=$(jq -cS . "$YAPPR_CONFIG" | shasum -a 256 | awk '{print substr($1,1
 PROMPT_FILE="$YAPPR_ROOT/$(jq -r '.prompt_file' "$YAPPR_CONFIG")"
 PROMPT_HASH=$(shasum -a 256 "$PROMPT_FILE" 2>/dev/null | awk '{print substr($1,1,12)}')
 
-mkdir -p "$LOGS_DIR"
-STAMP=$(date +%Y%m%d-%H%M%S)
-LOG_FILE="$LOGS_DIR/${STAMP}.log"
+LOG_FILE="$(yappr_log_path)"
 
 # ---------- helpers ----------
 now_ms() { python3 -c 'import time; print(int(time.time()*1000))'; }
@@ -334,8 +331,7 @@ log "Token usage: $USAGE"
 
 # ---------- metrics (synchronous JSONL append) ----------
 # AUDIO_SECONDS was set from AUDIO_MS in the streaming STT block above.
-METRIC_FILE="$YAPPR_ROOT/metrics/$(date +%Y-%m).jsonl"
-mkdir -p "$(dirname "$METRIC_FILE")"
+METRIC_FILE="$(yappr_metric_path)"
 
 jq -nc \
   --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
