@@ -18,7 +18,7 @@ You hold **Ctrl+Option+Y**, talk, and release. Under the hood:
 
 1. 🎙️ A **long-running Swift daemon** (`YapprSttDaemon`) owns the mic via `AVAudioEngine` and runs **streaming Nemotron 0.6B** (FluidAudio) in-process. Press = socket connect = mic on; release = half-close = mic off + finalize. Hotkey-to-first-sample is fast because the model is preloaded and the engine is warmed.
 2. 🧠 **Qwen3-1.7B-4bit via MLX** cleans up the verbatim transcript (removes "um", fixes grammar, adds punctuation)
-3. ⚡ Each token is **typed at your cursor as it streams** from the LLM — Wispr-Flow style
+3. ⚡ Each token is **typed at your cursor as it streams** from the LLM
 4. 🎯 The LLM cleanup runs on a **custom MLX server with explicit prefix caching** we built because stock `mlx_lm.server` doesn't cache prefixes across independent API calls — measured **~32% TTFT reduction** on a ~340-token cleanup prompt
 
 Full architecture → [`docs/architecture.md`](docs/architecture.md). Performance numbers → [`docs/performance.md`](docs/performance.md).
@@ -106,7 +106,7 @@ Full step-by-step walkthrough: [`docs/installation.md`](docs/installation.md).
 
 ## 🤔 Why does this exist?
 
-I love [Wispr Flow](https://wisprflow.ai/). I just wanted the same experience without a cloud round-trip, without sending audio off my machine, and with the freedom to swap models / prompts / hotkeys around. yappr is the local equivalent — same push-to-talk-then-type UX, but everything runs on the laptop.
+I wanted push-to-talk dictation that runs entirely on my laptop — no cloud round-trip, no audio leaving the machine, and full freedom to swap models, prompts, and hotkeys. yappr is that: local, private, low-latency, hackable.
 
 ---
 
@@ -122,7 +122,7 @@ I love [Wispr Flow](https://wisprflow.ai/). I just wanted the same experience wi
 
 ## 🙏 Credits
 
-[Wispr Flow](https://wisprflow.ai/) (the UX inspiration), [MLX](https://github.com/ml-explore/mlx) / [mlx-lm](https://github.com/ml-explore/mlx-lm), [FluidAudio](https://github.com/FluidInference/FluidAudio) (streaming Nemotron 0.6B), [Qwen3](https://qwenlm.github.io/), [Hammerspoon](https://www.hammerspoon.org/).
+[MLX](https://github.com/ml-explore/mlx) / [mlx-lm](https://github.com/ml-explore/mlx-lm), [FluidAudio](https://github.com/FluidInference/FluidAudio) (streaming Nemotron 0.6B), [Qwen3](https://qwenlm.github.io/), [Hammerspoon](https://www.hammerspoon.org/).
 
 ---
 

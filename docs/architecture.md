@@ -2,89 +2,238 @@
 
 ## Pipeline at a glance
 
+The pipeline has two distinct lifecycles:
+
+- **Long-running**: `YapprSttDaemon` is launched once (at login / by the user)
+  and stays resident. It loads Nemotron 0.6B, owns the mic via `AVAudioEngine`,
+  and serves push-to-talk sessions over a Unix socket. `bin/yappr-mlx-server`
+  similarly stays resident, holding the Qwen3-1.7B-4bit model and the
+  prefilled-system-prompt KV cache.
+- **Per-dictation**: Hammerspoon spawns `bin/yappr` on hotkey-press; `bin/yappr`
+  spawns `YapprSttConnect`, runs the cleanup LLM, appends a metric, exits.
+
 ```
-                  ┌─────────────────────────────────────────────────────────────┐
-                  │  Hammerspoon  (init.lua, lives in ~/.hammerspoon)           │
-                  │  • hotkey down → start ffmpeg → /tmp/yappr-<ts>.wav         │
-                  │  • hotkey up   → SIGTERM ffmpeg                             │
-                  │  • spawn `yappr` with YAPPR_AUDIO_FILE=<wav>                │
-                  │  • streamCallback → hs.eventtap.keyStrokes(chunk)           │
-                  └─────────────────────────────────────────────────────────────┘
-                                            │
-                                            ▼
-                  ┌─────────────────────────────────────────────────────────────┐
-                  │  bin/yappr  (bash orchestrator)                             │
-                  │                                                             │
-                  │  audio.wav ──► FluidAudio (Parakeet v2 ASR) ──► raw text   │
-                  │                                                  │          │
-                  │                                                  ▼          │
-                  │                                       bin/yappr-llm-call    │
-                  │                                       (Python, streams SSE) │
-                  │                                                  │          │
-                  │                                                  ▼          │
-                  │                                stdout: streamed cleaned text┼──► to Hammerspoon
-                  │                                stderr: final metric JSON    │
-                  │                                                             │
-                  │  metric.jsonl ◄── append one line per run                   │
-                  └─────────────────────────────────────────────────────────────┘
-                                            │ HTTP /v1/chat/completions
-                                            ▼
-                  ┌─────────────────────────────────────────────────────────────┐
-                  │  bin/yappr-mlx-server  (Python, port 8081)                  │
-                  │                                                             │
-                  │  startup: tokenize system prompt (N tokens)                 │
-                  │           → one forward pass populates KV cache             │
-                  │  request: hash incoming system msg                          │
-                  │           → if same: reset each layer's cache.offset = N    │
-                  │             prefill only the user-message suffix            │
-                  │           → if different: rebuild from scratch (~150ms)     │
-                  │           → stream_generate(...) → SSE chunks               │
-                  │           → final chunk carries usage{prompt,completion,    │
-                  │                                       cached_prompt_tokens} │
-                  └─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  Hammerspoon  (~/.hammerspoon/init.lua)                                      │
+│  • Ctrl+Option+Y down → hs.task.new("/bin/bash", "-c YAPPR_QUIET=1 yappr")   │
+│  • Ctrl+Option+Y up   → task:terminate()  (SIGTERM to bash)                  │
+│  • streamCallback     → hs.eventtap.keyStrokes(chunk) at the cursor          │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                       │ spawn (bash -c, NOT -lc)
+                                       ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  bin/yappr  (bash orchestrator)                                              │
+│                                                                              │
+│  1. FAST PATH — spawn YapprSttConnect FIRST, in background                   │
+│     (connect = daemon opens mic; everything else runs in parallel)           │
+│  2. Pre-flight  — load config, hash prompt, optional LLM health-check        │
+│  3. Wait        — `wait $STREAM_PID`; SIGTERM trap forwards to the client    │
+│  4. Cleanup     — pipe request into yappr-llm-call (streaming SSE)           │
+│  5. Metric      — append one JSONL row to metrics/<YYYY-MM>.jsonl            │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+        │                                       │
+        │ unix-socket /tmp/yappr-stt.sock        │ HTTP /v1/chat/completions
+        │ (control + result)                     │ (streaming SSE)
+        ▼                                       ▼
+┌────────────────────────────────────┐   ┌────────────────────────────────────┐
+│  YapprSttDaemon  (resident, Swift) │   │  bin/yappr-mlx-server (resident,   │
+│                                    │   │   Python, MLX, port 8081)          │
+│  • connect() ⇒ Session.run         │   │  • startup: prefill system-prompt  │
+│  • mic.beginSession() — engine     │   │    KV cache (N tokens, one fwd     │
+│    start; AVAudioEngine tap        │   │    pass)                           │
+│    delivers 16 kHz mono Float32    │   │  • per request: reset each layer's │
+│  • Streaming Nemotron 0.6B         │   │    cache.offset = N, prefill only  │
+│    chunks incrementally as audio   │   │    the user-suffix, stream         │
+│    flows in                        │   │  • SSE chunks → stdout of          │
+│  • Client SHUT_WR ⇒ mic.endSession │   │    yappr-llm-call → bin/yappr      │
+│    + manager.finish() → transcript │   │    stdout → Hammerspoon            │
+│  • Write "<audio_ms>\\t<text>\\n"    │   │    streamCallback → keystrokes    │
+│    and SHUT_WR                     │   │                                    │
+└────────────────────────────────────┘   └────────────────────────────────────┘
 ```
 
-## Components
+Everything is single-tenant. Sessions are serialized in the daemon; the MLX
+server is single-tenant by design (one lock, one shared mutable KV cache).
 
-### 🎙️ `bin/yappr` — bash orchestrator
-The entry point. Hammerspoon invokes it via `YAPPR_AUDIO_FILE=...` after recording. Loads the active config, runs STT via FluidAudio, hands cleanup off to `yappr-llm-call`, captures the metric blob from its stderr, appends one line to `metrics/<YYYY-MM>.jsonl`. In quiet mode (Hammerspoon path), stdout is just the streamed cleaned text — nothing else.
+## The daemon (`swift/yappr-stt-daemon/`)
 
-See the docstring at the top of `bin/yappr` for the full spec.
+One Swift package with two executables.
 
-### 🐍 `bin/yappr-llm-call` — streaming HTTP helper (Python)
-Reads request JSON from stdin, POSTs with `stream:true`, parses SSE, records the wall-clock timestamp of the first content chunk as real TTFT. Streams text on stdout as it arrives. Emits the final timing + token usage JSON on stderr's last line. The whole reason this exists is that `curl --write-out time_starttransfer` with `stream:false` measures "when the *entire* response was delivered" — not TTFT.
+### `YapprSttDaemon` — long-running STT server
 
-### 🧠 `bin/yappr-mlx-server` — custom MLX inference server (Python)
-A tiny ~320-line server built on the `mlx_lm` library with **explicit prefix caching** (the trick stock `mlx_lm.server` doesn't do for independent API calls). Prefills the system prompt KV cache at startup; on every request resets each layer's `cache.offset` back to the prefix boundary so only the user-message suffix needs new prefill work.
+`Sources/YapprSttDaemon/Daemon.swift` is `@main`. At launch:
 
-Exposes:
-- `POST /v1/chat/completions` — OpenAI-compatible, supports SSE streaming
-- `GET /v1/models` — includes `cached_prefix_tokens` and `cached_prefix_hash`
-- `GET /health` — `status`, `model`, `cached_prefix_tokens`, `cold_prefills`, `warm_requests`
+1. Loads the streaming Nemotron 0.6B model via FluidAudio's
+   `StreamingNemotronAsrManager` from
+   `~/.cache/fluidaudio/models/nemotron-streaming/560ms`.
+2. Warms the encoder by feeding two chunks of silence through
+   `appendAudio` → `processBufferedAudio` → `finish` → `reset`. The first
+   `processChunk` after `loadModels` is ~10× slower than steady-state because
+   CoreML compiles and uploads to the ANE; absorbing that cost at startup
+   keeps the first user dictation snappy.
+3. Calls `MicCapture.prepare()` (installs the tap, builds the AVAudioConverter,
+   calls `engine.prepare()` — the HAL stream does **not** open, no mic
+   indicator).
+4. Calls `MicCapture.warmUp()` — briefly starts and stops the engine to pay
+   AVAudioEngine's first-`start()` cost (~200–400 ms first time vs ~10–30 ms
+   steady-state). The orange mic dot flashes for ~100 ms. Deliberate, one-time.
+5. Binds the Unix socket at `/tmp/yappr-stt.sock` and serializes `accept`
+   loops into `Session.run`.
 
-See [`docs/performance.md`](performance.md) for the why and how, [`docs/architecture.md#yappr-mlx-server-internals`](#yappr-mlx-server-internals) below for mechanics.
+Model and chunk size are compile-time constants on `YapprSttDaemon`
+(`chunkSize = .ms560`, `cacheSubdir = "560ms"`). No runtime flags.
 
-### ⚙️ `bin/yappr-config` — config switcher (bash)
-Atomic symlink-based config switching. `list`, `active`, `use NAME`, `show [NAME]`, `diff A B`. See [`docs/configuration.md`](configuration.md).
+### `YapprSttConnect` — tiny socket client
 
-### 📊 `bin/yappr-stats` — metrics summarizer (Python)
-Reads `metrics/*.jsonl`. Default view is a summary of the last 20 runs with mean / p50 / p95 / max for each metric. Plus histograms, trends, A/B comparisons. See [`docs/metrics.md`](metrics.md).
+`Sources/YapprSttConnect/main.swift`. ~80 KB binary, ~5 ms cold start, no
+FluidAudio dependency. Top-level script-style code (not a `@main` struct) to
+shave a few more milliseconds. The behavior is, in order:
 
-## Internal dev tools (not part of the user-facing CLI)
+1. `socket(AF_UNIX, SOCK_STREAM, 0)` then `connect("/tmp/yappr-stt.sock")` —
+   the connect is what tells the daemon to start the mic.
+2. Install SIGTERM/SIGINT handler: on signal, `shutdown(fd, SHUT_WR)` and
+   stamp `g_t_eof_ns` for finalize-latency reporting. Async-signal-safe; no
+   trace write from inside the handler.
+3. `read()` until EOF; print transcript on stdout, `audio_ms / finalize_ms /
+   total_ms` summary on stderr.
 
-These live outside `bin/` because they aren't part of the dictation runtime — they're verification tools used during development.
+This binary used to be a Python helper; Python startup was 30–50 ms and that
+delay is lost audio at the head of every dictation. Swift was the smallest
+viable replacement.
 
-### 🔬 `diagnostics/yappr-probe-caching`
-A/B cache probe. Hits the active LLM endpoint N times with the same system prompt and varied tiny user messages, reports per-call TTFT. Used during development to verify whether a backend is actually doing prefix caching. Documented in [`docs/diagnostics.md`](diagnostics.md) for anyone curious to repro the benchmarks.
+### `MicCapture` (`MicCapture.swift`)
 
-## yappr-mlx-server internals
+Owns the `AVAudioEngine`, the input tap, and an `AVAudioConverter` that
+resamples whatever the device delivers down to 16 kHz mono Float32.
 
-The cache reset trick that makes this fast:
+- **Buffer-frame-size**: at `prepare()`, sets
+  `kAudioDevicePropertyBufferFrameSize = 256` (~5.3 ms) on the default input
+  device via HAL property API. `installTap`'s `bufferSize` argument is
+  advisory and macOS ignores it for device delivery, so we set the HAL
+  property directly. Affects all apps using the device until reset.
+- **Single tap, session-scoped continuation**: the tap closure is installed
+  once and reused across sessions. When no session is active,
+  `currentContinuation == nil` and tap buffers are dropped on the floor.
+- **Format-change resilience**: `beginSession()` re-queries the input node's
+  `inputFormat(forBus: 0)`. If sample rate or channel count differ from the
+  cached `nativeFormat`, the tap is removed, the converter is rebuilt, and
+  the tap is reinstalled with the new format. If `engine.start()` still
+  returns `kAudioUnitErr_FormatNotSupported (-10868)` (the device changed
+  between query and start — possible with AirPods hot-plug etc.), there's a
+  one-shot retry that refreshes again and reinstalls.
+- **Resampler statefulness**: `convert(to:error:)` is called with the
+  callback API and `.noDataNow` (not `.endOfStream`) so the resampler
+  retains its tail-sample buffer across ingest calls within a session.
+  Using `.endOfStream` flushes-and-resets every call and loses most samples
+  to repeated priming.
+
+### `Session` (`Session.swift`)
+
+One push-to-talk session = one `accept()`. The socket is a **control + result
+channel**, not a PCM pipe — audio flows from `MicCapture` directly into the
+manager, never through the socket.
+
+Wire protocol:
+
+```
+Client                                  Daemon
+  ─── connect() ───────────────────────►
+                                         accept(); mic.beginSession()
+                                         (orange dot ON, audio flowing into
+                                          the streaming Nemotron manager)
+  ─── shutdown(SHUT_WR) ───────────────►
+                                         mic.endSession()  (dot OFF)
+                                         manager.finish()  (~30 ms)
+  ◄── "<audio_ms>\t<transcript>\n" ────
+                                         shutdown(SHUT_WR)
+  EOF, close, exit
+```
+
+`Session.run` opens three concurrent tasks:
+
+- **Audio pump**: `for await buffer in stream { manager.appendAudio;
+  manager.processBufferedAudio }`. Driven by the mic; exits when the mic
+  finishes the continuation.
+- **EOF watcher**: `socket.read` loops until 0 bytes (client SHUT_WR), then
+  calls `mic.endSession()` which finishes the stream → pump exits.
+- **Timeout** (60 s): if EOF never arrives, force `mic.endSession()` and
+  `socket.shutdownReadWrite()` so the daemon doesn't block forever.
+
+After the task group joins, `manager.finish()` returns the final transcript,
+which gets written back as `<audio_ms>\t<text>\n` followed by `SHUT_WR`.
+
+Partial transcripts are never written; the client-side `SHUT_WR` is the only
+trigger for emitting text.
+
+## `bin/yappr` — bash orchestrator
+
+Entry point Hammerspoon spawns on hotkey-press. The top-of-file docstring is
+the authoritative spec; this section is a synopsis. Stages, in order:
+
+1. **Fast-path socket connect (latency-critical)**. Verify
+   `/tmp/yappr-stt.sock` exists, then spawn `YapprSttConnect` in the
+   background **before any other work**. The connect is what tells the daemon
+   to open the mic. A SIGTERM trap forwards the signal to the client.
+2. **Pre-flight (in parallel with recording)**. Load config from
+   `$YAPPR_CONFIG` (default `configs/active.json`), pull `llm.url`,
+   `model_name`, `max_tokens`, `temperature`, `extra_params`, `version`,
+   compute config + prompt hashes, set up the log file, optionally
+   health-check the LLM endpoint.
+3. **Wait + finalize**. `wait $STREAM_PID`. SIGTERM trap forwards to
+   `YapprSttConnect`, which half-closes; daemon finalizes and returns; client
+   prints transcript on stdout and `audio_ms=… finalize_ms=… total_ms=…` on
+   stderr, which we scrape for the metric.
+4. **LLM cleanup**. Build the chat-completions JSON from config, pipe into
+   `bin/yappr-llm-call`. The helper's stdout (cleaned text, streamed token
+   by token) flows straight through to `bin/yappr`'s stdout — no buffering.
+5. **Metric emit**. Append one JSON line to `metrics/<YYYY-MM>.jsonl` with
+   `stt_ms`, `stt_total_held_ms`, `llm_ttft_ms`, `llm_total_ms`,
+   `audio_seconds`, `prompt_tokens`, `completion_tokens`, hashes, etc.
+
+Output discipline:
+
+- `stdout` = streamed cleaned text. Nothing else.
+- `stderr` = diagnostics + final timing report (suppressed when `YAPPR_QUIET=1`).
+- `logs/<timestamp>.log` = per-run log file.
+- `metrics/<YYYY-MM>.jsonl` = one JSON line per run.
+
+Env vars: `YAPPR_CONFIG`, `YAPPR_QUIET`, `YAPPR_COPY`, `YAPPR_DEBUG`,
+`YAPPR_ROOT`. See the in-file docstring.
+
+`set -e` is deliberately off (only `set -uo pipefail`) so a soft failure
+still leaves logs we can read.
+
+## `bin/yappr-llm-call` — streaming HTTP helper (Python)
+
+Reads request JSON (`{url, body, timeout}`) from stdin, POSTs the body with
+`stream:true`, parses the SSE stream, and:
+
+- Streams each `choices[0].delta.content` chunk to stdout immediately (one
+  `sys.stdout.write` + `flush` per chunk).
+- Stamps a wall-clock timestamp on the first content chunk — that's the
+  real TTFT, not "time to last byte".
+- Emits a single-line JSON metric blob on the **last** line of stderr:
+  `{text, ttft_ms, total_ms, prompt_tokens, completion_tokens, error?}`.
+
+The reason this exists in Python rather than inline curl: `curl --write-out
+time_starttransfer` with `stream:false` measures when the entire response
+was delivered, not first-token latency.
+
+## `bin/yappr-mlx-server` — local inference backend (Python)
+
+A custom ~440-line MLX server with **explicit prefix caching**. Stock
+`mlx_lm.server` does not preserve a prefilled KV cache across independent
+chat-completion requests; this one does.
+
+Mechanism:
 
 ```python
-# startup (called once)
-sys_tokens = tokenizer.apply_chat_template([{"role": "system", "content": SYS}],
-                                            tokenize=True, add_generation_prompt=False)
+# at startup, once
+sys_tokens = tokenizer.apply_chat_template(
+    [{"role": "system", "content": SYS}],
+    tokenize=True, add_generation_prompt=False,
+)
 master_cache = make_prompt_cache(model)
 _ = model(mx.array(sys_tokens)[None], cache=master_cache)
 mx.eval([c.state for c in master_cache])
@@ -92,43 +241,129 @@ N = len(sys_tokens)
 sys_prompt_hash = sha256(SYS)[:12]
 
 # every request
-incoming_sys = request_body["messages"][0]["content"]
+incoming_sys = body["messages"][0]["content"]
 if sha256(incoming_sys)[:12] != sys_prompt_hash:
-    # prompt file changed without server restart — rebuild from scratch
-    rebuild(incoming_sys)
+    rebuild(incoming_sys)   # cold path; prompt-file changed without restart
 
-# reset offset; underlying KV tensors stay allocated but model only reads up to offset
+# reset offset back to the prefix boundary; underlying KV tensors stay live
 for layer in master_cache:
     layer.offset = N
 
-# only the user-portion needs new prefill work
-full_tokens = tokenizer.apply_chat_template(request_body["messages"],
-                                             tokenize=True, add_generation_prompt=True)
-user_tokens = full_tokens[N:]
-
+full_tokens = tokenizer.apply_chat_template(body["messages"],
+                                            tokenize=True,
+                                            add_generation_prompt=True)
+user_tokens = full_tokens[N:]   # only the user-suffix needs new prefill
 for chunk in stream_generate(model, tokenizer, user_tokens,
-                              prompt_cache=master_cache, sampler=sampler):
+                             prompt_cache=master_cache, sampler=sampler):
     yield_sse(chunk)
 ```
 
-A `threading.Lock` serializes requests against the shared mutable cache — this server is intentionally single-tenant.
+A `threading.Lock` serializes requests against the shared mutable cache.
+Single-tenant by design.
 
-**Limitations:**
-- Works only for standard full-attention transformers that support `make_prompt_cache(model)` with offset-based truncation. SSM/Mamba/hybrid models would need a different cache primitive.
-- The cache is RAM-only; server restart pays a fresh cold prefill. `save_prompt_cache(...)` to disk is on the wishlist.
+Endpoints:
 
-## Streaming pipeline end to end
+- `POST /v1/chat/completions` — OpenAI-compatible, supports SSE streaming.
+- `GET /v1/models` — includes `cached_prefix_tokens`, `cached_prefix_hash`.
+- `GET /health` — `status`, `model`, `cached_prefix_tokens`, `cold_prefills`,
+  `warm_requests`.
 
-What makes text **appear at the cursor while the LLM is still generating**:
+See [`docs/performance.md`](performance.md) for measured numbers.
 
-1. **`yappr-llm-call`** reads the LLM server's SSE stream line by line. Stamps a wall-clock timestamp on the first `choices[0].delta.content` chunk → that's the real TTFT. Each chunk is `sys.stdout.write(...); sys.stdout.flush()`'d immediately.
-2. **`bin/yappr`** doesn't capture or buffer `yappr-llm-call`'s stdout — it lets it flow straight through to its own stdout.
-3. **Hammerspoon's `hs.task` `streamCallback`** fires whenever the child process writes. Each chunk is passed to `hs.eventtap.keyStrokes(chunk)`, which synthesizes character-by-character key events at the cursor.
+**Limitations**:
 
-Total path: LLM server → SSE stream → `yappr-llm-call` (stdout) → `yappr` (stdout passthrough) → Hammerspoon (streamCallback) → cursor (synthesized keystrokes).
+- Works only for full-attention transformers that support
+  `make_prompt_cache(model)` with offset-based truncation. SSM/Mamba/hybrid
+  models need a different cache primitive.
+- KV cache is RAM-only; server restart pays a fresh cold prefill.
 
-**The clipboard is never read, never written.**
+## Telemetry: `/tmp/yappr-trace.log` and `bin/yappr-trace`
+
+Every stage writes append-only events to a single shared log file. Format,
+one event per line:
+
+```
+<unix_microseconds> <source> <event> [k1=v1 k2=v2 ...]
+```
+
+Sources: `hs` (Hammerspoon), `swift` (`YapprSttConnect`), `daemon`
+(`YapprSttDaemon`). All writes use `open(O_APPEND) + write + close`, which
+gives atomic appends per syscall on macOS (writes are well under
+`PIPE_BUF = 512`), so it's safe to call from any thread — including the
+CoreAudio I/O thread for the `daemon_first_tap` event.
+
+Representative events:
+
+| Source  | Event                              | Meaning                                       |
+| ------- | ---------------------------------- | --------------------------------------------- |
+| `hs`    | `hs_press`                         | Hotkey down                                   |
+| `hs`    | `hs_task_start_call/return`        | `hs.task.new(bash, …):start()`                |
+| `hs`    | `hs_release`                       | Hotkey up (triggers `task:terminate()`)       |
+| `swift` | `swift_main`                       | YapprSttConnect process start                 |
+| `swift` | `swift_socket_open` / `_connected` | Socket connect milestones                     |
+| `swift` | `swift_recv_done`                  | Daemon's response received (bytes=N)          |
+| `daemon`| `daemon_accept`                    | `accept()` returned, new session starting     |
+| `daemon`| `daemon_begin_session_call/return` | `mic.beginSession()` boundaries               |
+| `daemon`| `daemon_engine_start_call/return`  | `AVAudioEngine.start()` boundaries            |
+| `daemon`| `daemon_first_tap`                 | First tap callback fires (frames=N)           |
+| `daemon`| `daemon_eof_received`              | Client SHUT_WR observed                       |
+| `daemon`| `daemon_finish_call/return`        | `manager.finish()` boundaries                 |
+| `daemon`| `daemon_write_done`                | Transcript written to socket                  |
+
+`bin/yappr-trace` renders sessions with deltas and phase grouping. A
+"session" is a contiguous run of events with < 10 s gaps between them. The
+phases are:
+
+```
+PHASES = ["hammerspoon", "spawn", "daemon-setup", "capture", "finalize"]
+```
+
+Usage: `yappr-trace` (last session), `yappr-trace --last N` (last N).
+
+## Other binaries
+
+| Binary               | Role                                                        |
+| -------------------- | ----------------------------------------------------------- |
+| `bin/yappr-config`   | Atomic symlink-based config switching (`list / active / use NAME / show / diff`). See [`configuration.md`](configuration.md). |
+| `bin/yappr-stats`    | Reads `metrics/*.jsonl`; default view = last-20-run summary with mean / p50 / p95 / max + histograms + A/B comparisons. See [`metrics.md`](metrics.md). |
+| `bin/yappr-trace`    | Renders `/tmp/yappr-trace.log` (above).                     |
+
+### Internal dev tools (not in `bin/`)
+
+- `diagnostics/yappr-probe-caching` — A/B cache probe. Hits an LLM endpoint
+  N times with the same system prompt and varied tiny user messages and
+  reports per-call TTFT. Used to verify a backend is actually prefix-caching.
+  See [`diagnostics.md`](diagnostics.md).
+
+## End-to-end streaming path
+
+What makes text appear at the cursor while the LLM is still generating:
+
+1. `yappr-mlx-server` flushes each SSE chunk immediately after generating it.
+2. `yappr-llm-call` reads the stream line by line, writes each
+   `delta.content` to `sys.stdout` and flushes.
+3. `bin/yappr` does not capture or buffer the helper's stdout — it inherits
+   straight through to `bin/yappr`'s own stdout.
+4. Hammerspoon's `hs.task` `streamCallback` fires on each write; each chunk
+   is passed to `hs.eventtap.keyStrokes(chunk)`, which synthesizes character
+   key events at the cursor.
+
+The clipboard is **never** read and **never** written by default. (Set
+`YAPPR_COPY=1` to also `pbcopy` the cleaned text after the stream completes;
+this is for CLI use, not the Hammerspoon path.)
+
+## Hammerspoon integration (`~/.hammerspoon/init.lua`)
+
+Hold Ctrl+Option+Y to dictate. Press = spawn `bin/yappr`; release =
+`task:terminate()` (SIGTERM). The task is spawned with `/bin/bash -c` —
+**not** `-lc`. A login shell sources `~/.profile` on every invocation,
+which on this system adds ~640 ms before `bin/yappr` even starts — all of
+it lost audio at the front of the dictation. PATH is set inline in the
+command instead.
 
 ## Why bash for the orchestrator?
 
-The orchestrator's job is shell glue — invoke processes, manage env vars, pipe stdin/stdout, append to files. Bash is the right tool. The interesting per-protocol bits (SSE streaming, KV-cache tricks) live in the Python helpers where they belong.
+The orchestrator's job is shell glue — spawn processes, manage env vars,
+pipe stdin/stdout, append to files. Bash is the right tool. The
+latency-sensitive bits (socket client, mic, streaming STT) live in Swift;
+the protocol-y bits (SSE parsing, KV-cache tricks) live in Python.
