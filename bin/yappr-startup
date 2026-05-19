@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+#
+# yappr-startup — bring up everything yappr needs.
+#
+# Starts (in the background) the two long-running processes:
+#   1. YapprSttDaemon  — owns the mic, runs streaming STT
+#   2. yappr-mlx-server — local LLM cleanup endpoint on :8081
+#
+# Idempotent: components already running are reported and skipped.
+# Logs land at:
+#   /tmp/yappr-daemon.log
+#   /tmp/yappr-mlx-server.log
+#
+# After this exits successfully, the Hammerspoon hotkey or `yappr` from a
+# terminal will work end-to-end. Stop everything with: yappr-shutdown
+# (or: pkill -f YapprSttDaemon; pkill -f yappr-mlx-server)
+
+set -uo pipefail
+
+YAPPR_ROOT="${YAPPR_ROOT:-$HOME/toolkit/yappr}"
+DAEMON_BIN="$YAPPR_ROOT/swift/yappr-stt-daemon/.build/release/YapprSttDaemon"
+MLX_SERVER_BIN="$YAPPR_ROOT/bin/yappr-mlx-server"
+CONFIG="$YAPPR_ROOT/configs/active.json"
+DAEMON_LOG="/tmp/yappr-daemon.log"
+MLX_LOG="/tmp/yappr-mlx-server.log"
+
+# ----- output helpers -----
+
+if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
+  BOLD=$'\e[1m'; DIM=$'\e[2m'; RESET=$'\e[0m'
+  GREEN=$'\e[32m'; YELLOW=$'\e[33m'; RED=$'\e[31m'; CYAN=$'\e[36m'
+else
+  BOLD=""; DIM=""; RESET=""; GREEN=""; YELLOW=""; RED=""; CYAN=""
+fi
+
+step() { echo; echo "${BOLD}${CYAN}==>${RESET} ${BOLD}$*${RESET}"; }
+info() { echo "    $*"; }
+ok()   { echo "    ${GREEN}OK${RESET}  $*"; }
+warn() { echo "    ${YELLOW}!${RESET}   $*"; }
+fail() { echo "${RED}FAIL${RESET} $*" >&2; exit 1; }
+
+# ----- 1. STT daemon -----
+
+step "STT daemon (YapprSttDaemon)"
+
+if pgrep -f YapprSttDaemon >/dev/null; then
+  ok "Already running (PID $(pgrep -f YapprSttDaemon))"
+else
+  [[ -x "$DAEMON_BIN" ]] || fail "binary not found at $DAEMON_BIN — run scripts/install.sh first"
+  info "Starting; logs → $DAEMON_LOG"
+  nohup "$DAEMON_BIN" >"$DAEMON_LOG" 2>&1 &
+  disown
+  # Wait for the daemon's listening socket to appear. Model load + encoder
+  # warm-up takes ~8 s on a cold cache.
+  info "Waiting for $DAEMON_LOG → 'listening on /tmp/yappr-stt.sock'..."
+  for i in $(seq 1 30); do
+    if [[ -S /tmp/yappr-stt.sock ]] && grep -q "listening on" "$DAEMON_LOG" 2>/dev/null; then
+      ok "up (PID $(pgrep -f YapprSttDaemon))"
+      break
+    fi
+    sleep 1
+    if [[ $i -eq 30 ]]; then
+      fail "daemon didn't bind socket in 30 s — check $DAEMON_LOG"
+    fi
+  done
+fi
+
+# ----- 2. MLX server -----
+
+step "MLX LLM server (yappr-mlx-server)"
+
+if pgrep -f yappr-mlx-server >/dev/null; then
+  ok "Already running (PID $(pgrep -f yappr-mlx-server))"
+elif lsof -nP -iTCP:8081 -sTCP:LISTEN >/dev/null 2>&1; then
+  warn "something else is listening on :8081"
+  warn "diagnose: lsof -nP -iTCP:8081 -sTCP:LISTEN"
+else
+  [[ -x "$MLX_SERVER_BIN" ]] || fail "$MLX_SERVER_BIN not executable — run scripts/install.sh first"
+  [[ -f "$CONFIG" ]] || fail "no active config at $CONFIG — run: yappr-config list"
+
+  # jq's `// empty` falls back to empty string for missing/null fields, so a
+  # malformed config surfaces as a concrete "missing field" message below
+  # rather than launching the server with `--model null` or `--port http://…`.
+  MODEL=$(jq -r '.llm.model_name // empty' "$CONFIG")
+  PROMPT_REL=$(jq -r '.prompt_file // empty' "$CONFIG")
+  URL=$(jq -r '.llm.url // empty' "$CONFIG")
+  PORT=$(echo "$URL" | sed -nE 's|.*://[^:/]*:([0-9]+).*|\1|p')
+  PROMPT="$YAPPR_ROOT/$PROMPT_REL"
+
+  [[ -n "$MODEL" ]]       || fail "missing .llm.model_name in $CONFIG"
+  [[ -n "$PROMPT_REL" ]]  || fail "missing .prompt_file in $CONFIG"
+  [[ -f "$PROMPT" ]]      || fail "prompt file not found at $PROMPT"
+  [[ "$PORT" =~ ^[0-9]+$ ]] || fail "could not parse port from llm.url=$URL in $CONFIG"
+
+  info "model=$MODEL"
+  info "prompt=$(basename "$PROMPT")  port=$PORT"
+  info "logs → $MLX_LOG"
+
+  nohup "$MLX_SERVER_BIN" \
+    --model "$MODEL" \
+    --system-prompt-file "$PROMPT" \
+    --port "$PORT" \
+    >"$MLX_LOG" 2>&1 &
+  disown
+  # Wait for the server to accept connections. Model load + KV prefill on
+  # the system prompt is ~10–30 s depending on model size.
+  info "Waiting for :$PORT to respond (model load + KV prefill, ~10–30 s)..."
+  for i in $(seq 1 60); do
+    if curl -fsS -o /dev/null --max-time 1 "http://127.0.0.1:$PORT/v1/models" 2>/dev/null; then
+      ok "up (PID $(pgrep -f yappr-mlx-server), :$PORT responding)"
+      break
+    fi
+    sleep 1
+    if [[ $i -eq 60 ]]; then
+      fail "MLX server didn't answer in 60 s — check $MLX_LOG"
+    fi
+  done
+fi
+
+# ----- 3. Hammerspoon (informational only — can't start a GUI app cleanly) -----
+
+step "Hammerspoon (hotkey listener)"
+
+if pgrep -x Hammerspoon >/dev/null; then
+  ok "Running"
+else
+  warn "Not running — push-to-talk hotkey won't fire"
+  warn "Launch Hammerspoon.app, or use 'yappr' from a terminal"
+fi
+
+# ----- summary -----
+
+echo
+echo "${BOLD}${GREEN}yappr is ready.${RESET}"
+echo
+echo "  ${DIM}Hotkey:${RESET}  Hold Ctrl+Option+Y, speak, release"
+echo "  ${DIM}CLI:${RESET}     ${BOLD}yappr${RESET}  (talk, Ctrl+C to stop)"
+echo "  ${DIM}Trace:${RESET}   ${BOLD}yappr-trace --tail${RESET}"
+echo "  ${DIM}Stop:${RESET}    pkill -f YapprSttDaemon ; pkill -f yappr-mlx-server"

@@ -274,18 +274,43 @@ yappr-mlx-server \
 To use a different endpoint (Anthropic-compatible gateway, a remote
 LLM, etc.), edit `configs/active.json`. See [`docs/configuration.md`](configuration.md).
 
-## Verification
+## Starting yappr
 
-In one terminal, start the daemon and watch it boot:
+After the install completes, bring everything up with:
 
 ```bash
-~/toolkit/yappr/swift/yappr-stt-daemon/.build/release/YapprSttDaemon
+yappr-startup
 ```
 
-You should see log lines for model load, mic engine prepare + warm-up, and
-finally `listening on /tmp/yappr-stt.sock`.
+This launches the two long-running processes that yappr needs:
 
-In a second terminal:
+- **`YapprSttDaemon`** — owns the mic, runs streaming STT. Listens on
+  `/tmp/yappr-stt.sock`.
+- **`yappr-mlx-server`** — local LLM cleanup endpoint on `:8081`. Uses
+  the model named in `configs/active.json` and pre-prefills the KV cache
+  with `prompts/cleanup.txt`.
+
+`yappr-startup` is idempotent — re-running it skips whatever's already up.
+Logs land at `/tmp/yappr-daemon.log` and `/tmp/yappr-mlx-server.log`.
+
+**To stop everything:**
+
+```bash
+pkill -f YapprSttDaemon
+pkill -f yappr-mlx-server
+```
+
+**When you edit `prompts/cleanup.txt`**, restart `yappr-mlx-server` so it
+re-prefills the cache with the new prompt:
+
+```bash
+pkill -f yappr-mlx-server
+yappr-startup   # restarts only what's down
+```
+
+## Verification
+
+With `yappr-startup` done, follow the events as you dictate:
 
 ```bash
 yappr-trace --tail

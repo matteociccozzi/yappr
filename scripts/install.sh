@@ -315,25 +315,23 @@ ${BOLD}${GREEN}Install complete.${RESET}
 
 ${BOLD}Next steps:${RESET}
 
-  ${BOLD}1.${RESET} Start the daemon:
-       $DAEMON_BIN
-     On first launch, macOS will prompt for Microphone access. Grant it.
-     Leave the daemon running (in a tab, screen/tmux, or set up launchd
-     yourself if you want auto-start at login).
+  ${BOLD}1.${RESET} Bring everything up:
+       $YAPPR_BIN/yappr-startup
+     Starts YapprSttDaemon (mic + STT) and yappr-mlx-server (local LLM
+     cleanup) in the background. On first launch macOS prompts for
+     Microphone access — grant it. Idempotent: safe to re-run.
 
-  ${BOLD}2.${RESET} Verify the socket appeared:
-       ls /tmp/yappr-stt.sock
-
-  ${BOLD}3.${RESET} Configure your LLM endpoint:
+  ${BOLD}2.${RESET} Configure your LLM endpoint (optional):
        jq -r .llm.url "$YAPPR_ROOT/configs/active.json"
-     Default is local MLX at 127.0.0.1:8081. Edit if needed:
+     Default is local MLX at 127.0.0.1:8081 (what yappr-startup brings up).
+     Edit if you want a different model or a hosted endpoint:
        $YAPPR_BIN/yappr-config edit
 
-  ${BOLD}4.${RESET} (Hammerspoon users) Wire up the push-to-talk hotkey:
+  ${BOLD}3.${RESET} (Hammerspoon users) Wire up the push-to-talk hotkey:
        See $YAPPR_ROOT/docs/installation.md (Hammerspoon section)
        Grant Accessibility + Input Monitoring when prompted.
 
-  ${BOLD}5.${RESET} Test it:
+  ${BOLD}4.${RESET} Test it:
        In one terminal: $YAPPR_BIN/yappr-trace --tail
        Hold your hotkey or run $YAPPR_BIN/yappr directly.
 
