@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# yappr-help — print subcommand listing.
+set -euo pipefail
+# shellcheck source=bin/_yappr-paths.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_yappr-paths.sh"
+VERSION="$(cat "$YAPPR_ROOT/VERSION" 2>/dev/null || echo "unknown")"
+
+cat <<EOF
+yappr $VERSION — push-to-talk voice dictation for macOS Apple Silicon
+
+USAGE
+  yappr [subcommand] [options]
+
+DAILY USE
+  yappr dictate    Record and type cleaned text at cursor (default — called by Hammerspoon)
+  yappr stats      Show dictation metrics (words, latency, daily usage)
+  yappr trace      Show timing trace from last session
+
+DAEMON & SERVER
+  yappr daemon <start|stop|restart|status|logs|tail>
+                   Manage the Nemotron STT daemon (YapprSttDaemon)
+  yappr server <start|stop|restart|status|logs|tail>
+                   Manage the MLX inference server (Qwen3)
+
+CONFIGURATION
+  yappr config list          List available configs
+  yappr config use <name>    Switch active config
+  yappr config show          Print active config
+
+OTHER
+  yappr doctor     Post-install health check
+  yappr help       Show this message
+  yappr version    Show version
+
+ENV VAR OVERRIDES
+  YAPPR_ROOT           Repo/source root (auto-detected)
+  YAPPR_CONFIG         Path to active config JSON
+  YAPPR_CONFIG_HOME    Config dir (default: ~/.config/yappr)
+  YAPPR_STATE_HOME     State dir for logs/metrics (default: ~/.local/state/yappr)
+  YAPPR_RUNTIME_DIR    Runtime dir for socket/PID (default: /tmp/yappr-\$(id -u))
+  YAPPR_SOCKET         Socket path (default: \$YAPPR_RUNTIME_DIR/stt.sock)
+  YAPPR_TRACE_LOG      Trace log path (default: \$YAPPR_RUNTIME_DIR/trace.log)
+
+DOCS
+  $YAPPR_ROOT/docs/installation.md
+  $YAPPR_ROOT/docs/cli-reference.md
+  $YAPPR_ROOT/CONTRIBUTING.md
+EOF
