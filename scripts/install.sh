@@ -129,6 +129,20 @@ fi
 ok "Repo root: $YAPPR_ROOT"
 
 # -----------------------------------------------------------------------------
+# 1b. Submodules
+# -----------------------------------------------------------------------------
+
+step "Submodules (vendor/FluidAudio)"
+
+if [[ ! -f "$YAPPR_ROOT/vendor/FluidAudio/Package.swift" ]]; then
+  info "Initializing vendor/FluidAudio submodule..."
+  git -C "$YAPPR_ROOT" submodule update --init --recursive
+fi
+[[ -f "$YAPPR_ROOT/vendor/FluidAudio/Package.swift" ]] \
+  || fail "vendor/FluidAudio submodule init failed. Try: git submodule update --init"
+ok "vendor/FluidAudio present"
+
+# -----------------------------------------------------------------------------
 # 2. Xcode CLI tools
 # -----------------------------------------------------------------------------
 
@@ -195,6 +209,34 @@ if [[ $SKIP_OPTIONAL -eq 0 ]]; then
       warn "Skipped Hammerspoon. CLI mode only."
     fi
   fi
+
+  # Write Hammerspoon init.lua from template
+  step "Hammerspoon config (~/.hammerspoon/init.lua)"
+  if [[ -d "/Applications/Hammerspoon.app" ]]; then
+    TMPL_FILE="$YAPPR_ROOT/scripts/templates/hammerspoon-init.lua.tmpl"
+    HS_DIR="$HOME/.hammerspoon"
+    HS_FILE="$HS_DIR/init.lua"
+    mkdir -p "$HS_DIR"
+    YAPPR_TRACE_DEFAULT="/tmp/yappr-$(id -u)/trace.log"
+    if [[ -f "$HS_FILE" ]] && ! grep -q "@yappr-installed@" "$HS_FILE" 2>/dev/null; then
+      warn "$HS_FILE already exists and is not yappr-managed."
+      if prompt_yn "Back it up and replace with yappr's config?" "N"; then
+        cp "$HS_FILE" "$HS_FILE.bak.$(date +%s)"
+        ok "backed up to $HS_FILE.bak.*"
+      else
+        warn "Skipped. Wire init.lua manually — see docs/installation.md (Hammerspoon section)."
+        WROTE_HS=0
+      fi
+    fi
+    if [[ "${WROTE_HS:-1}" -eq 1 ]]; then
+      sed \
+        -e "s|@YAPPR_BIN@|$YAPPR_ROOT/bin/yappr|g" \
+        -e "s|@YAPPR_TRACE_LOG@|$YAPPR_TRACE_DEFAULT|g" \
+        "$TMPL_FILE" > "$HS_FILE"
+      ok "wrote $HS_FILE"
+      info "Reload Hammerspoon: menu bar icon → Reload Config"
+    fi
+  fi
 fi
 
 # -----------------------------------------------------------------------------
@@ -241,6 +283,36 @@ if [[ $NEED_BUILD -eq 1 ]]; then
   (cd "$DAEMON_DIR" && swift build -c release)
   ok "Built YapprSttDaemon"
   ok "Built YapprSttConnect"
+fi
+
+# -----------------------------------------------------------------------------
+# 7b. Populate Nemotron model cache
+# -----------------------------------------------------------------------------
+
+step "Nemotron model cache (~/.cache/fluidaudio/)"
+
+NEMOTRON_CACHE="$HOME/.cache/fluidaudio/models/nemotron-streaming/560ms"
+if [[ -f "$NEMOTRON_CACHE/preprocessor.mlmodelc/coremldata.bin" ]]; then
+  ok "models already cached at $NEMOTRON_CACHE"
+else
+  info "Building fluidaudiocli and downloading Nemotron models (~200 MB, one-time)..."
+  (cd "$YAPPR_ROOT/vendor/FluidAudio" \
+    && swift build -c release --product fluidaudiocli 2>&1 | tail -3)
+  WARMUP_WAV="$(mktemp).wav"
+  python3 - <<PY
+import wave, struct
+with wave.open("$WARMUP_WAV", "w") as f:
+    f.setnchannels(1); f.setsampwidth(2); f.setframerate(16000)
+    f.writeframes(struct.pack("<" + "h" * 16000, *([0] * 16000)))
+PY
+  "$YAPPR_ROOT/vendor/FluidAudio/.build/release/fluidaudiocli" \
+    nemotron-transcribe --input "$WARMUP_WAV" --chunk 560 >/dev/null 2>&1
+  rm -f "$WARMUP_WAV"
+  if [[ -f "$NEMOTRON_CACHE/preprocessor.mlmodelc/coremldata.bin" ]]; then
+    ok "models cached at $NEMOTRON_CACHE"
+  else
+    fail "Model cache still empty after warmup. Run manually: vendor/FluidAudio/.build/release/fluidaudiocli nemotron-transcribe --input <any.wav> --chunk 560"
+  fi
 fi
 
 # -----------------------------------------------------------------------------
@@ -311,31 +383,37 @@ fi
 
 cat <<EOF
 
-${BOLD}${GREEN}Install complete.${RESET}
+${BOLD}${GREEN}✅ Install complete.${RESET}
+
+${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}
+${BOLD}⚠️  Three permissions you must grant manually${RESET}
+   (macOS will not prompt until first use)
+
+  ${BOLD}1. Microphone${RESET} → YapprSttDaemon
+     ${DIM}System Settings → Privacy & Security → Microphone${RESET}
+
+  ${BOLD}2. Accessibility${RESET} → Hammerspoon
+     ${DIM}System Settings → Privacy & Security → Accessibility${RESET}
+
+  ${BOLD}3. Input Monitoring${RESET} → Hammerspoon
+     ${DIM}System Settings → Privacy & Security → Input Monitoring${RESET}
+
+${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}
 
 ${BOLD}Next steps:${RESET}
 
-  ${BOLD}1.${RESET} Start the daemon:
+  ${BOLD}1.${RESET} Start the STT daemon:
        $DAEMON_BIN
-     On first launch, macOS will prompt for Microphone access. Grant it.
-     Leave the daemon running (in a tab, screen/tmux, or set up launchd
-     yourself if you want auto-start at login).
 
-  ${BOLD}2.${RESET} Verify the socket appeared:
-       ls /tmp/yappr-stt.sock
+  ${BOLD}2.${RESET} Start the MLX inference server:
+       $YAPPR_ROOT/bin/yappr-mlx-server \\
+         --model mlx-community/Qwen3-1.7B-4bit \\
+         --system-prompt-file $YAPPR_ROOT/prompts/cleanup.txt
 
-  ${BOLD}3.${RESET} Configure your LLM endpoint:
-       jq -r .llm.url "$YAPPR_ROOT/configs/active.json"
-     Default is local MLX at 127.0.0.1:8081. Edit if needed:
-       $YAPPR_BIN/yappr-config edit
+  ${BOLD}3.${RESET} Reload Hammerspoon config (menu bar icon → Reload Config)
+     then grant Accessibility + Input Monitoring when prompted.
 
-  ${BOLD}4.${RESET} (Hammerspoon users) Wire up the push-to-talk hotkey:
-       See $YAPPR_ROOT/docs/installation.md (Hammerspoon section)
-       Grant Accessibility + Input Monitoring when prompted.
+  ${BOLD}4.${RESET} Hold ${BOLD}Ctrl+Option+Y${RESET}, speak, release. Cleaned text types at cursor.
 
-  ${BOLD}5.${RESET} Test it:
-       In one terminal: $YAPPR_BIN/yappr-trace --tail
-       Hold your hotkey or run $YAPPR_BIN/yappr directly.
-
-For the full reference: $YAPPR_ROOT/docs/installation.md
+Full reference: $YAPPR_ROOT/docs/installation.md
 EOF
