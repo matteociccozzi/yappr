@@ -98,7 +98,7 @@ delivered to the recognizer, in milliseconds.
 - `Sources/YapprSttDaemon/UnixSocket.swift` — BSD socket wrapper.
 - `Sources/YapprSttDaemon/Log.swift` — minimal logger.
 - `Sources/YapprSttDaemon/Trace.swift` — append-only span emitter writing
-  TSV rows to `/tmp/yappr-trace.log`. Mirrors the inline trace helpers in
+  TSV rows to `$YAPPR_TRACE_LOG` (default: `/tmp/yappr-<uid>/trace.log`). Mirrors the inline trace helpers in
   `YapprSttConnect/main.swift` and `~/.hammerspoon/init.lua`; together they
   give end-to-end stage timings that `bin/yappr-trace` renders.
 - `Sources/YapprSttConnect/main.swift` — the socket client binary.
