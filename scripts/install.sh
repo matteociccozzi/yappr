@@ -414,7 +414,40 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# 10. Summary
+# 10. Daemon auto-start at login (launchd)
+# -----------------------------------------------------------------------------
+
+step "Daemon auto-start at login (launchd)"
+
+PLIST_DEST="$HOME/Library/LaunchAgents/com.yappr.daemon.plist"
+PLIST_TMPL="$YAPPR_ROOT/scripts/templates/com.yappr.daemon.plist.tmpl"
+
+YAPPR_SOCKET_DEFAULT="$YAPPR_RUNTIME_DIR/stt.sock"
+YAPPR_DAEMON_PID_DEFAULT="$YAPPR_RUNTIME_DIR/stt-daemon.pid"
+YAPPR_DAEMON_LOG_DEFAULT="$YAPPR_STATE_HOME/logs/stt-daemon.log"
+
+if [[ $SKIP_OPTIONAL -eq 0 ]]; then
+  mkdir -p "$HOME/Library/LaunchAgents"
+  sed \
+    -e "s|@DAEMON_BIN@|$DAEMON_BIN|g" \
+    -e "s|@YAPPR_ROOT@|$YAPPR_ROOT|g" \
+    -e "s|@YAPPR_STATE_HOME@|$YAPPR_STATE_HOME|g" \
+    -e "s|@YAPPR_RUNTIME_DIR@|$YAPPR_RUNTIME_DIR|g" \
+    -e "s|@YAPPR_SOCKET@|$YAPPR_SOCKET_DEFAULT|g" \
+    -e "s|@YAPPR_DAEMON_PID@|$YAPPR_DAEMON_PID_DEFAULT|g" \
+    -e "s|@YAPPR_DAEMON_LOG@|$YAPPR_DAEMON_LOG_DEFAULT|g" \
+    -e "s|@YAPPR_TRACE_LOG@|$YAPPR_TRACE_DEFAULT|g" \
+    "$PLIST_TMPL" > "$PLIST_DEST"
+  launchctl bootstrap "gui/$(id -u)" "$PLIST_DEST" 2>/dev/null \
+    || launchctl load "$PLIST_DEST" 2>/dev/null \
+    || warn "launchctl load failed — daemon will not auto-start. Start manually: yappr daemon start"
+  ok "launchd plist installed: $PLIST_DEST"
+else
+  info "Skipped launchd (--skip-optional). Start daemon manually: yappr daemon start"
+fi
+
+# -----------------------------------------------------------------------------
+# 11. Summary
 # -----------------------------------------------------------------------------
 
 cat <<EOF
