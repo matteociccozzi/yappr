@@ -29,11 +29,11 @@ The pipeline has two distinct lifecycles:
 │  2. Pre-flight  — load config, hash prompt, optional LLM health-check        │
 │  3. Wait        — `wait $STREAM_PID`; SIGTERM trap forwards to the client    │
 │  4. Cleanup     — pipe request into yappr-llm-call (streaming SSE)           │
-│  5. Metric      — append one JSONL row to metrics/<YYYY-MM>.jsonl            │
+│  5. Metric      — append one JSONL row to $YAPPR_STATE_HOME/metrics/<YYYY-MM>.jsonl            │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
         │                                       │
-        │ unix-socket /tmp/yappr-stt.sock        │ HTTP /v1/chat/completions
+        │ unix-socket $YAPPR_RUNTIME_DIR/stt.sock        │ HTTP /v1/chat/completions
         │ (control + result)                     │ (streaming SSE)
         ▼                                       ▼
 ┌────────────────────────────────────┐   ┌────────────────────────────────────┐
@@ -78,11 +78,22 @@ One Swift package with two executables.
 4. Calls `MicCapture.warmUp()` — briefly starts and stops the engine to pay
    AVAudioEngine's first-`start()` cost (~200–400 ms first time vs ~10–30 ms
    steady-state). The orange mic dot flashes for ~100 ms. Deliberate, one-time.
-5. Binds the Unix socket at `/tmp/yappr-stt.sock` and serializes `accept`
+5. Binds the Unix socket at `$YAPPR_RUNTIME_DIR/stt.sock` and serializes `accept`
    loops into `Session.run`.
 
 Model and chunk size are compile-time constants on `YapprSttDaemon`
 (`chunkSize = .ms560`, `cacheSubdir = "560ms"`). No runtime flags.
+
+### Environment variables consumed by YapprSttDaemon
+
+| Var | What it controls |
+|---|---|
+| `YAPPR_SOCKET` | Unix socket path (default: `$YAPPR_RUNTIME_DIR/stt.sock`) |
+| `YAPPR_RUNTIME_DIR` | Directory for socket, PID, trace (default: `/tmp/yappr-$(id -u)`) |
+| `YAPPR_DAEMON_PID` | PID file path (default: `$YAPPR_RUNTIME_DIR/daemon.pid`) |
+| `YAPPR_TRACE_LOG` | Timing trace file path (default: `$YAPPR_RUNTIME_DIR/trace.log`) |
+
+`YapprSttConnect` reads `YAPPR_SOCKET` and `YAPPR_TRACE_LOG` via the same mechanism.
 
 ### `YapprSttConnect` — tiny socket client
 
@@ -90,7 +101,7 @@ Model and chunk size are compile-time constants on `YapprSttDaemon`
 FluidAudio dependency. Top-level script-style code (not a `@main` struct) to
 shave a few more milliseconds. The behavior is, in order:
 
-1. `socket(AF_UNIX, SOCK_STREAM, 0)` then `connect("/tmp/yappr-stt.sock")` —
+1. `socket(AF_UNIX, SOCK_STREAM, 0)` then `connect("$YAPPR_RUNTIME_DIR/stt.sock")` —
    the connect is what tells the daemon to start the mic.
 2. Install SIGTERM/SIGINT handler: on signal, `shutdown(fd, SHUT_WR)` and
    stamp `g_t_eof_ns` for finalize-latency reporting. Async-signal-safe; no
@@ -172,7 +183,7 @@ Entry point Hammerspoon spawns on hotkey-press. The top-of-file docstring is
 the authoritative spec; this section is a synopsis. Stages, in order:
 
 1. **Fast-path socket connect (latency-critical)**. Verify
-   `/tmp/yappr-stt.sock` exists, then spawn `YapprSttConnect` in the
+   `$YAPPR_RUNTIME_DIR/stt.sock` exists, then spawn `YapprSttConnect` in the
    background **before any other work**. The connect is what tells the daemon
    to open the mic. A SIGTERM trap forwards the signal to the client.
 2. **Pre-flight (in parallel with recording)**. Load config from
@@ -187,7 +198,7 @@ the authoritative spec; this section is a synopsis. Stages, in order:
 4. **LLM cleanup**. Build the chat-completions JSON from config, pipe into
    `bin/yappr-llm-call`. The helper's stdout (cleaned text, streamed token
    by token) flows straight through to `bin/yappr`'s stdout — no buffering.
-5. **Metric emit**. Append one JSON line to `metrics/<YYYY-MM>.jsonl` with
+5. **Metric emit**. Append one JSON line to `$YAPPR_STATE_HOME/metrics/<YYYY-MM>.jsonl` with
    `stt_ms`, `stt_total_held_ms`, `llm_ttft_ms`, `llm_total_ms`,
    `audio_seconds`, `prompt_tokens`, `completion_tokens`, hashes, etc.
 
@@ -195,8 +206,8 @@ Output discipline:
 
 - `stdout` = streamed cleaned text. Nothing else.
 - `stderr` = diagnostics + final timing report (suppressed when `YAPPR_QUIET=1`).
-- `logs/<timestamp>.log` = per-run log file.
-- `metrics/<YYYY-MM>.jsonl` = one JSON line per run.
+- `$YAPPR_STATE_HOME/logs/<timestamp>.log` = per-run log file.
+- `$YAPPR_STATE_HOME/metrics/<YYYY-MM>.jsonl` = one JSON line per run.
 
 Env vars: `YAPPR_CONFIG`, `YAPPR_QUIET`, `YAPPR_COPY`, `YAPPR_DEBUG`,
 `YAPPR_ROOT`. See the in-file docstring.
@@ -277,7 +288,7 @@ See [`docs/performance.md`](performance.md) for measured numbers.
   models need a different cache primitive.
 - KV cache is RAM-only; server restart pays a fresh cold prefill.
 
-## Telemetry: `/tmp/yappr-trace.log` and `bin/yappr-trace`
+## Telemetry: `$YAPPR_RUNTIME_DIR/trace.log` and `bin/yappr-trace`
 
 Every stage writes append-only events to a single shared log file. Format,
 one event per line:
@@ -325,8 +336,8 @@ Usage: `yappr-trace` (last session), `yappr-trace --last N` (last N).
 | Binary               | Role                                                        |
 | -------------------- | ----------------------------------------------------------- |
 | `bin/yappr-config`   | Atomic symlink-based config switching (`list / active / use NAME / show / diff`). See [`configuration.md`](configuration.md). |
-| `bin/yappr-stats`    | Reads `metrics/*.jsonl`; default view = last-20-run summary with mean / p50 / p95 / max + histograms + A/B comparisons. See [`metrics.md`](metrics.md). |
-| `bin/yappr-trace`    | Renders `/tmp/yappr-trace.log` (above).                     |
+| `bin/yappr-stats`    | Reads `$YAPPR_STATE_HOME/metrics/*.jsonl`; default view = last-20-run summary with mean / p50 / p95 / max + histograms + A/B comparisons. See [`metrics.md`](metrics.md). |
+| `bin/yappr-trace`    | Renders `$YAPPR_RUNTIME_DIR/trace.log` (above).                     |
 
 ### Internal dev tools (not in `bin/`)
 
