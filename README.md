@@ -74,21 +74,30 @@ This is the part that makes yappr feel like *dictation*, not just transcription.
 
 ---
 
-## 🚀 Quick install
-
-macOS on Apple Silicon (M1/M2/M3/M4). Three lines:
+## Quick Install
 
 ```bash
-git clone https://github.com/matteociccozzi/yappr.git ~/toolkit/yappr
-cd ~/toolkit/yappr
+git clone --recurse-submodules https://github.com/matteociccozzi/yappr.git
+cd yappr
 ./scripts/install.sh
 ```
 
-The script is idempotent and handles dependencies, the Swift build, codesigning, and PATH setup. Three permissions it **can't** grant for you (macOS will prompt):
+> If you already cloned without `--recurse-submodules`, run:
+> `git submodule update --init --recursive`
 
-- 🎙️ Microphone access for the daemon (system dialog on first launch)
-- ⌨️ Accessibility + Input Monitoring for Hammerspoon (push-to-talk)
-- 🧠 LLM endpoint configuration (edit `configs/active.json`)
+> **Three permissions you must grant manually** (macOS will not prompt until first use):
+>
+> | Permission | App | Where |
+> |---|---|---|
+> | Microphone | YapprSttDaemon | System Settings → Privacy & Security → Microphone |
+> | Accessibility | Hammerspoon | System Settings → Privacy & Security → Accessibility |
+> | Input Monitoring | Hammerspoon | System Settings → Privacy & Security → Input Monitoring |
+
+After install, verify everything is working:
+
+```bash
+yappr doctor
+```
 
 Full step-by-step walkthrough: [`docs/installation.md`](docs/installation.md).
 
@@ -105,6 +114,8 @@ Full step-by-step walkthrough: [`docs/installation.md`](docs/installation.md).
 | 📊 [`docs/metrics.md`](docs/metrics.md)              | Per-run JSONL, `yappr-stats` summarizer & A/B comparisons           |
 | 🎨 [`docs/customization.md`](docs/customization.md)  | Cleanup prompt, custom vocab, hotkey choice, model swap             |
 | 🔬 [`docs/diagnostics.md`](docs/diagnostics.md)      | Troubleshooting + the cache probe (dev tool)                        |
+| [`docs/cli-reference.md`](docs/cli-reference.md) | All subcommands, flags, and env var overrides |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Dev setup, repo layout, how to contribute |
 
 ---
 

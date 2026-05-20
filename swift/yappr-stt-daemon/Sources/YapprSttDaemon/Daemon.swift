@@ -5,8 +5,21 @@ import Foundation
 
 @main
 struct YapprSttDaemon {
-    /// Hard-coded socket path. v1 has no CLI flags — see plan, Phase 1.
-    static let socketPath = "/tmp/yappr-stt.sock"
+    /// Runtime directory resolved from YAPPR_RUNTIME_DIR env var, falling back
+    /// to /tmp/yappr-<uid> to avoid collisions on multi-user machines.
+    static var runtimeDir: String {
+        let env = ProcessInfo.processInfo.environment
+        if let d = env["YAPPR_RUNTIME_DIR"] { return d }
+        return "/tmp/yappr-\(getuid())"
+    }
+
+    /// Unix socket path resolved from YAPPR_SOCKET env var, falling back to
+    /// <runtimeDir>/stt.sock.
+    static var socketPath: String {
+        let env = ProcessInfo.processInfo.environment
+        if let s = env["YAPPR_SOCKET"] { return s }
+        return "\(runtimeDir)/stt.sock"
+    }
 
     /// Hard-coded model choice. Phase 0 A/B picked Nemotron 0.6B at 560 ms chunks.
     /// To switch engines, change these two lines and rebuild — there is no runtime flag.
@@ -75,6 +88,23 @@ struct YapprSttDaemon {
         } catch {
             Log.warn("mic warm-up failed: \(error); first session will absorb the cold start")
         }
+
+        // Ensure runtime directory exists with restricted permissions (700)
+        // before trying to create the socket or PID file inside it.
+        let fm = FileManager.default
+        try? fm.createDirectory(
+            atPath: Self.runtimeDir,
+            withIntermediateDirectories: true,
+            attributes: [FileAttributeKey.posixPermissions: NSNumber(value: Int16(0o700))]
+        )
+
+        // Write PID file so shell wrappers can track the daemon process.
+        let pidPath = ProcessInfo.processInfo.environment["YAPPR_DAEMON_PID"]
+            ?? "\(Self.runtimeDir)/daemon.pid"
+        try? "\(ProcessInfo.processInfo.processIdentifier)".write(
+            toFile: pidPath, atomically: true, encoding: .utf8
+        )
+        defer { try? FileManager.default.removeItem(atPath: pidPath) }
 
         let listener: UnixSocket
         do {

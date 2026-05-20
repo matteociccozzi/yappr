@@ -1,15 +1,34 @@
 import Darwin
 import Foundation
 
-// Append a telemetry event to /tmp/yappr-trace.log. Format mirrors the
-// daemon's Trace.swift so all rows share one file/format.
+// Resolve runtime paths from env vars, mirroring the daemon's logic.
+// YAPPR_RUNTIME_DIR → /tmp/yappr-<uid> fallback.
+let _runtimeDir: String = {
+    let env = ProcessInfo.processInfo.environment
+    if let d = env["YAPPR_RUNTIME_DIR"] { return d }
+    return "/tmp/yappr-\(getuid())"
+}()
+let _tracePath: String = {
+    let env = ProcessInfo.processInfo.environment
+    if let t = env["YAPPR_TRACE_LOG"] { return t }
+    return "\(_runtimeDir)/trace.log"
+}()
+let SOCK_PATH: String = {
+    let env = ProcessInfo.processInfo.environment
+    if let s = env["YAPPR_SOCKET"] { return s }
+    return "\(_runtimeDir)/stt.sock"
+}()
+
+// Append a telemetry event to the trace log. Path is resolved from
+// YAPPR_TRACE_LOG env var (falling back to <runtimeDir>/trace.log).
+// Format mirrors the daemon's Trace.swift so all rows share one file/format.
 func trace(_ event: String, _ details: String = "") {
     let us = Int64(Date().timeIntervalSince1970 * 1_000_000)
     let line = details.isEmpty
         ? "\(us) swift \(event)\n"
         : "\(us) swift \(event) \(details)\n"
     guard let data = line.data(using: .utf8) else { return }
-    let fd = Darwin.open("/tmp/yappr-trace.log", O_WRONLY | O_CREAT | O_APPEND, 0o644)
+    let fd = Darwin.open(_tracePath, O_WRONLY | O_CREAT | O_APPEND, 0o644)
     if fd >= 0 {
         _ = data.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, data.count) }
         _ = Darwin.close(fd)
@@ -20,9 +39,10 @@ trace("swift_main")
 
 // yappr-stt-connect — tiny socket client for yappr-stt-daemon.
 //
-// Connects to /tmp/yappr-stt.sock (which causes the daemon to start the mic
-// and begin a session), waits for SIGTERM/SIGINT to half-close the write side
-// (which causes the daemon to stop the mic and finalize), then reads the
+// Connects to the daemon socket (YAPPR_SOCKET env var, falling back to
+// <runtimeDir>/stt.sock), which causes the daemon to start the mic and begin
+// a session. Waits for SIGTERM/SIGINT to half-close the write side (which
+// causes the daemon to stop the mic and finalize), then reads the
 // "<audio_ms>\t<transcript>\n" response and prints:
 //   stdout: transcript (raw text)
 //   stderr: "[yappr-stream] audio_ms=N finalize_ms=M total_ms=K"
@@ -31,8 +51,6 @@ trace("swift_main")
 // (latency-critical — the socket connect is what tells the daemon to open the
 // mic, so anything before connect is lost audio). Swift binary startup is
 // 3-8 ms.
-
-let SOCK_PATH = "/tmp/yappr-stt.sock"
 
 // Signal-shared state — flag + write fd. Both must be accessible from the
 // async-signal-safe handler, so they're file-scope globals.

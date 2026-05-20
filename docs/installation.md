@@ -20,10 +20,13 @@ Everything else is handled by the install script.
 ## Recommended: one-shot install
 
 ```bash
-git clone https://github.com/matteociccozzi/yappr.git ~/toolkit/yappr
-cd ~/toolkit/yappr
+git clone --recurse-submodules https://github.com/matteociccozzi/yappr.git
+cd yappr
 ./scripts/install.sh
 ```
+
+> If you already cloned without `--recurse-submodules`, run:
+> `git submodule update --init --recursive`
 
 The script is idempotent — safe to re-run. It will prompt before each
 optional step.
@@ -71,9 +74,12 @@ For when you want to know every step. This mirrors what the script does.
 ### 1. Clone
 
 ```bash
-git clone https://github.com/matteociccozzi/yappr.git ~/toolkit/yappr
-cd ~/toolkit/yappr
+git clone --recurse-submodules https://github.com/matteociccozzi/yappr.git
+cd yappr
 ```
+
+> If you already cloned without `--recurse-submodules`, run:
+> `git submodule update --init --recursive`
 
 ### 2. Xcode command-line tools
 
@@ -121,16 +127,16 @@ swift build -c release
 
 Produces:
 
-- `.build/release/YapprSttDaemon` — the long-running daemon that owns the
+- `~/.local/share/yappr/build/yappr-stt-daemon/release/YapprSttDaemon` — the long-running daemon that owns the
   mic and runs streaming Nemotron 0.6B in-process.
-- `.build/release/YapprSttConnect` — the tiny socket client (~5 ms
+- `~/.local/share/yappr/build/yappr-stt-daemon/release/YapprSttConnect` — the tiny socket client (~5 ms
   startup) that `bin/yappr` spawns on each press.
 
 ### 7. Ad-hoc codesign
 
 ```bash
-codesign --force --sign - .build/release/YapprSttDaemon
-codesign --force --sign - .build/release/YapprSttConnect
+codesign --force --sign - ~/.local/share/yappr/build/yappr-stt-daemon/release/YapprSttDaemon
+codesign --force --sign - ~/.local/share/yappr/build/yappr-stt-daemon/release/YapprSttConnect
 cd -
 ```
 
@@ -141,11 +147,46 @@ for mic access. Ad-hoc signing fixes that.
 ### 8. Add `yappr/bin/` to your PATH
 
 ```bash
-echo 'export PATH="$HOME/toolkit/yappr/bin:$PATH"' >> ~/.zshrc
+echo 'export PATH="$YAPPR_ROOT/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
+(Replace `$YAPPR_ROOT` with the absolute path where you cloned yappr.)
+
 (Or `~/.bashrc`, or the fish equivalent.)
+
+## Where yappr stores data
+
+yappr follows [XDG Base Directory](https://specifications.freedesktop.org/basedir-spec/latest/) conventions.
+Every path is overridable via its env var.
+
+| What | Env var | Default |
+|---|---|---|
+| Config files | `YAPPR_CONFIG_HOME` | `~/.config/yappr` |
+| Metrics, logs | `YAPPR_STATE_HOME` | `~/.local/state/yappr` |
+| Cached models | `YAPPR_CACHE_HOME` | `~/.cache/yappr` |
+| Socket, PID, trace | `YAPPR_RUNTIME_DIR` | `/tmp/yappr-$(id -u)` |
+| Built binaries | `YAPPR_DATA_HOME` | `~/.local/share/yappr` |
+
+The source tree stays clean — no runtime state is written into it.
+
+## Running the daemon
+
+**Option 1 — launchd (default after install):** `install.sh` registers a LaunchAgent
+that starts the daemon at login and restarts it if it crashes.
+
+**Option 2 — yappr daemon (manual):**
+```bash
+yappr daemon start    # start in background
+yappr daemon status   # check if running
+yappr daemon stop     # stop
+yappr daemon logs     # view log
+```
+
+**Option 3 — direct launch (debugging):**
+```bash
+~/.local/share/yappr/build/yappr-stt-daemon/release/YapprSttDaemon
+```
 
 ## Post-install setup
 
@@ -154,7 +195,7 @@ source ~/.zshrc
 Start the daemon for the first time:
 
 ```bash
-~/toolkit/yappr/swift/yappr-stt-daemon/.build/release/YapprSttDaemon
+~/.local/share/yappr/build/yappr-stt-daemon/release/YapprSttDaemon
 ```
 
 macOS shows a Microphone permission dialog during the daemon's startup
@@ -170,90 +211,13 @@ tccutil reset Microphone
 
 then restart the daemon.
 
-### Hammerspoon push-to-talk
+### Hammerspoon configuration
 
-Hammerspoon's config lives at `~/.hammerspoon/init.lua` (not in this repo).
-Drop this in:
+`install.sh` writes `~/.hammerspoon/init.lua` automatically using your actual
+`$YAPPR_ROOT` path. If you already have an `init.lua` that is not yappr-managed,
+install.sh will ask before replacing it.
 
-```lua
--- yappr: hold Ctrl+Option+Y to dictate.
--- Press → spawn bin/yappr, which opens the yappr-stt-daemon socket. The daemon
--- owns the mic (AVAudioEngine) and starts capturing as soon as the socket is
--- connected. Release → SIGTERM to bin/yappr → forwarded to the YapprSttConnect
--- client → half-closes the socket → daemon stops the mic and returns the
--- transcript. bin/yappr then runs the cleanup LLM and streams cleaned tokens
--- to stdout, which we type at the cursor.
-
-local YAPPR_BIN = os.getenv("HOME") .. "/toolkit/yappr/bin/yappr"
-
-local recording = false  -- guard against keyDown autorepeat
-local task = nil
-
--- Append one telemetry event to /tmp/yappr-trace.log. Mirrors the format used
--- by the Swift daemon and Swift client: "<unix_microseconds> hs <event>\n".
-local function trace(event)
-  local us = math.floor(hs.timer.secondsSinceEpoch() * 1e6)
-  local f = io.open("/tmp/yappr-trace.log", "a")
-  if f then
-    f:write(string.format("%d hs %s\n", us, event))
-    f:close()
-  end
-end
-
-local function start()
-  trace("hs_press")
-  hs.alert.closeAll()
-  hs.alert.show("🎙️ Recording…", 9999)
-
-  local streamCallback = function(_taskHandle, stdOut, _stdErr)
-    if stdOut and #stdOut > 0 then
-      hs.eventtap.keyStrokes(stdOut)
-    end
-    return true
-  end
-
-  local finalCallback = function(exitCode, _stdOut, stdErr)
-    hs.alert.closeAll()
-    if exitCode ~= 0 then
-      local msg = (stdErr and #stdErr > 0) and stdErr:sub(-200) or ("rc=" .. tostring(exitCode))
-      print("[yappr] failed: " .. msg)
-      hs.alert.show("❌ " .. msg:sub(1, 120), 3)
-    end
-  end
-
-  task = hs.task.new(
-    "/bin/bash",
-    finalCallback,
-    streamCallback,
-    {
-      "-c",
-      "YAPPR_QUIET=1 PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin " .. YAPPR_BIN,
-    }
-  )
-  trace("hs_task_start_call")
-  task:start()
-  trace("hs_task_start_return")
-end
-
-local function stop()
-  trace("hs_release")
-  if task then
-    task:terminate()
-    task = nil
-  end
-end
-
-hs.hotkey.bind({"ctrl", "alt"}, "y",
-  function()
-    if not recording then recording = true; start() end
-  end,
-  function()
-    if recording then recording = false; stop() end
-  end
-)
-
-hs.alert.show("yappr loaded — hold Ctrl+Option+Y to dictate", 2)
-```
+Hotkey: **hold Ctrl+Option+Y** to record, **release** to finalize and type.
 
 Reload Hammerspoon (menu bar icon → Reload Config). The first time, macOS
 will ask for **Accessibility** and **Input Monitoring** permissions —
@@ -267,7 +231,7 @@ at a local MLX server on `127.0.0.1:8081`. To run one:
 ```bash
 yappr-mlx-server \
     --model              mlx-community/Qwen3-1.7B-4bit \
-    --system-prompt-file ~/toolkit/yappr/prompts/cleanup.txt \
+    --system-prompt-file $YAPPR_ROOT/prompts/cleanup.txt \
     --host 127.0.0.1 --port 8081
 ```
 
@@ -279,11 +243,11 @@ LLM, etc.), edit `configs/active.json`. See [`docs/configuration.md`](configurat
 In one terminal, start the daemon and watch it boot:
 
 ```bash
-~/toolkit/yappr/swift/yappr-stt-daemon/.build/release/YapprSttDaemon
+~/.local/share/yappr/build/yappr-stt-daemon/release/YapprSttDaemon
 ```
 
 You should see log lines for model load, mic engine prepare + warm-up, and
-finally `listening on /tmp/yappr-stt.sock`.
+finally `listening on $YAPPR_RUNTIME_DIR/stt.sock`.
 
 In a second terminal:
 
@@ -306,8 +270,8 @@ If you see all of those, you're done.
 
 ## Troubleshooting
 
-**`socket not found at /tmp/yappr-stt.sock`** — the daemon isn't running.
-Start `YapprSttDaemon` and confirm `ls /tmp/yappr-stt.sock` shows a socket.
+**`socket not found at $YAPPR_RUNTIME_DIR/stt.sock`** — the daemon isn't running.
+Start `YapprSttDaemon` and confirm `ls $YAPPR_RUNTIME_DIR/stt.sock` shows a socket.
 
 **First dictation drops the leading audio** — check the trace; if there's
 no `hs hs_press` event, Hammerspoon hasn't loaded the new `init.lua`.
@@ -322,7 +286,7 @@ not listed at all, reset with `tccutil reset Microphone` and restart the
 daemon to re-trigger the prompt.
 
 **Audio captured but transcript is empty** — the daemon got the audio
-(check the `audio_ms` value in `/tmp/yappr-trace.log`), but cleanup
+(check the `audio_ms` value in `$YAPPR_RUNTIME_DIR/trace.log`), but cleanup
 returned nothing. Almost always means the LLM endpoint is unreachable.
 Test with `curl -s $(jq -r .llm.url configs/active.json)/health`.
 
@@ -332,6 +296,6 @@ extinguish.
 
 **Rebuilt the daemon and macOS re-prompts for mic access** — the ad-hoc
 codesign step was skipped. Re-run `codesign --force --sign -
-.build/release/YapprSttDaemon` and restart.
+~/.local/share/yappr/build/yappr-stt-daemon/release/YapprSttDaemon` and restart.
 
 For deeper diagnostics see [`docs/diagnostics.md`](diagnostics.md).

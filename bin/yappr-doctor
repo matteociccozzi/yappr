@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""yappr-doctor — post-install health check."""
+import json
+import os
+import platform
+import shutil
+import socket
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+import _yappr_paths as paths
+
+OK    = "\033[32m[OK]  \033[0m"
+WARN  = "\033[33m[WARN]\033[0m"
+FAIL  = "\033[31m[FAIL]\033[0m"
+
+failures = 0
+
+def ok(msg):   print(f"{OK} {msg}")
+def warn(msg): print(f"{WARN} {msg}")
+def fail(msg):
+    global failures
+    failures += 1
+    print(f"{FAIL} {msg}")
+
+
+# 1. Platform
+if platform.system() == "Darwin" and platform.machine() == "arm64":
+    ok("macOS Apple Silicon")
+else:
+    fail(f"Expected macOS Apple Silicon, got {platform.system()} {platform.machine()}")
+
+# 2. Required commands
+for cmd in ["jq", "python3"]:
+    if shutil.which(cmd):
+        ok(f"{cmd} on PATH")
+    else:
+        fail(f"{cmd} not found on PATH")
+
+# 3. Required dirs
+for label, p in [
+    ("config dir", paths.config_home()),
+    ("state/logs", paths.logs_dir()),
+    ("state/metrics", paths.metrics_dir()),
+    ("runtime dir", paths.runtime_dir()),
+]:
+    p = Path(p)
+    if p.exists() and os.access(p, os.W_OK):
+        ok(f"{label}: {p}")
+    else:
+        fail(f"{label} missing or not writable: {p}  →  run 'yappr daemon start' or install.sh")
+
+# 4. Active config
+config = paths.config_file()
+cfg = {}
+if not config.exists():
+    fail(f"Active config not found: {config}")
+else:
+    try:
+        cfg = json.loads(config.read_text())
+        llm_url = cfg.get("llm", {}).get("url", "")
+        ok(f"Active config: {config}")
+        if llm_url:
+            ok(f"LLM url: {llm_url}")
+        else:
+            warn("Active config has no llm.url")
+    except json.JSONDecodeError as e:
+        fail(f"Active config is not valid JSON: {e}")
+
+# 5. Daemon binary
+daemon_bin = paths.daemon_binary()
+if not daemon_bin.exists():
+    fail(f"Daemon binary not found: {daemon_bin}  →  run scripts/install.sh")
+else:
+    r = subprocess.run(["codesign", "-dv", str(daemon_bin)],
+                       capture_output=True)
+    if r.returncode == 0:
+        ok(f"Daemon binary codesigned: {daemon_bin.name}")
+    else:
+        warn("Daemon binary not codesigned (codesign -dv failed) — may lose mic TCC on rebuild")
+
+# 6. Daemon process
+pid_file = paths.daemon_pid()
+running = False
+if pid_file.exists():
+    try:
+        pid = int(pid_file.read_text().strip())
+        os.kill(pid, 0)
+        ok(f"Daemon running (pid={pid})")
+        running = True
+    except (ValueError, ProcessLookupError):
+        fail("Daemon PID file exists but process is dead — run 'yappr daemon start'")
+else:
+    fail("Daemon not running — run 'yappr daemon start'")
+
+# 7. Socket
+sock_path = paths.socket()
+if Path(sock_path).is_socket():
+    try:
+        s = socket.socket(socket.AF_UNIX)
+        s.settimeout(1)
+        s.connect(str(sock_path))
+        s.close()
+        ok(f"Socket connectable: {sock_path}")
+    except OSError:
+        warn(f"Socket exists but not connectable: {sock_path}")
+else:
+    if running:
+        warn(f"Socket not found: {sock_path} — daemon may still be starting")
+    else:
+        fail(f"Socket not found: {sock_path}")
+
+# 8. LLM endpoint
+health_url = ""
+try:
+    llm_url = cfg.get("llm", {}).get("url", "http://127.0.0.1:8081/v1/chat/completions")
+    health_url = llm_url.replace("/v1/chat/completions", "/v1/models")
+    import urllib.request
+    req = urllib.request.Request(health_url, method="GET")
+    with urllib.request.urlopen(req, timeout=2) as resp:
+        ok(f"LLM endpoint reachable: {health_url} (HTTP {resp.status})")
+except Exception:
+    warn(f"LLM endpoint not reachable: {health_url} — run 'yappr server start'")
+
+# 9. Nemotron model cache
+nemotron = Path.home() / ".cache/fluidaudio/models/nemotron-streaming/560ms/preprocessor.mlmodelc/coremldata.bin"
+if nemotron.exists():
+    ok(f"Nemotron model cache: {nemotron.parent.parent}")
+else:
+    fail(f"Nemotron model cache missing: {nemotron.parent}  →  re-run scripts/install.sh")
+
+# 10. Hammerspoon
+hs_app = Path("/Applications/Hammerspoon.app")
+hs_lua = Path.home() / ".hammerspoon/init.lua"
+if hs_app.exists():
+    ok("Hammerspoon installed")
+else:
+    warn("Hammerspoon not installed — hotkey will not work")
+if hs_lua.exists():
+    content = hs_lua.read_text()
+    yappr_bin = str(paths.root() / "bin" / "yappr")
+    if yappr_bin in content or "yappr" in content:
+        ok("~/.hammerspoon/init.lua references yappr")
+    else:
+        warn("~/.hammerspoon/init.lua exists but may not reference yappr binary")
+else:
+    fail("~/.hammerspoon/init.lua not found — run scripts/install.sh to write it")
+
+# 11. mlx_lm
+if shutil.which("mlx_lm.server") or shutil.which("mlx_lm"):
+    ok("mlx_lm on PATH")
+else:
+    warn("mlx_lm not found on PATH — run: uv tool install mlx-lm")
+
+# Summary
+print()
+if failures == 0:
+    print("\033[32m✅ All checks passed. yappr is ready.\033[0m")
+else:
+    print(f"\033[31m❌ {failures} check(s) failed. Fix the items above and re-run: yappr doctor\033[0m")
+    sys.exit(1)

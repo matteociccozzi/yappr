@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """yappr-stats — summarize, histogram, trend, and compare yappr metrics.
 
-Reads JSONL files from ~/toolkit/yappr/metrics/*.jsonl.
-
-To call from anywhere, add to your shell rc:
-  export PATH="$HOME/toolkit/yappr/bin:$PATH"
+Reads JSONL files from <YAPPR_ROOT>/metrics/*.jsonl.
+YAPPR_ROOT is auto-detected from the script location; override with the
+YAPPR_ROOT env var. Override the metrics dir directly with YAPPR_METRICS_DIR.
 """
 
 from __future__ import annotations
@@ -17,9 +16,14 @@ import re
 import statistics
 import sys
 from datetime import datetime, timedelta, timezone
+import sys as _sys
 from pathlib import Path
 
-METRICS_DIR = Path.home() / "toolkit" / "yappr" / "metrics"
+_sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _yappr_paths as paths
+
+YAPPR_ROOT = paths.root()
+METRICS_DIR = Path(os.environ.get("YAPPR_METRICS_DIR") or paths.metrics_dir())
 
 # ANSI colors — only when stdout is a TTY and NO_COLOR isn't set
 _COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
@@ -45,6 +49,7 @@ STORED_METRICS = [
     "prompt_tokens",
     "completion_tokens",
     "audio_seconds",
+    "stt_total_held_ms",
     "raw_chars",
     "cleaned_chars",
 ]
@@ -260,7 +265,17 @@ def main(argv: list[str]) -> int:
                    help="archive all metric files to metrics.bak.<ts>/ (effectively wipes stats)")
     p.add_argument("-y", "--yes", action="store_true",
                    help="skip the confirmation prompt for --clear")
+    p.add_argument(
+        "--metrics-dir",
+        default=None,
+        metavar="DIR",
+        help=f"Override metrics directory (default: {paths.metrics_dir()})"
+    )
     args = p.parse_args(argv)
+
+    global METRICS_DIR
+    if args.metrics_dir:
+        METRICS_DIR = Path(args.metrics_dir)
 
     if args.clear:
         return cmd_clear(skip_prompt=args.yes)
@@ -360,6 +375,7 @@ def main(argv: list[str]) -> int:
 def cmd_clear(skip_prompt: bool = False) -> int:
     """Archive all metric files to metrics.bak.<ts>/, effectively clearing stats."""
     import shutil
+    import time
     if not METRICS_DIR.exists():
         print(f"Nothing to clear — {METRICS_DIR} doesn't exist.")
         return 0
@@ -381,7 +397,7 @@ def cmd_clear(skip_prompt: bool = False) -> int:
             print("Aborted.")
             return 1
 
-    backup = METRICS_DIR.parent / f"metrics.bak.{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    backup = paths.state_home() / f"metrics.bak.{int(time.time())}"
     backup.mkdir(parents=True, exist_ok=False)
     for f in files:
         shutil.move(str(f), str(backup / f.name))

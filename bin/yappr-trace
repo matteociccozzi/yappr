@@ -27,8 +27,12 @@ import argparse
 import os
 import sys
 import time
+from pathlib import Path as _Path
 
-LOG_PATH = "/tmp/yappr-trace.log"
+sys.path.insert(0, str(_Path(__file__).resolve().parent))
+import _yappr_paths as paths
+
+LOG_PATH = paths.trace_log()
 SESSION_GAP_US = 10_000_000  # 10 s
 
 # Phase grouping: each session's events are bucketed into ordered phases.

@@ -19,7 +19,7 @@ yappr-config path                # print the configs directory
 Example `list` output:
 
 ```
-Configs in /Users/you/toolkit/yappr/configs:
+Configs in $YAPPR_CONFIG_HOME/configs:
 
 * default              Streaming STT (Nemotron 0.6B @ 560ms via yappr-stt-daemon) + Qwen3-1.7B-4bit cleanup via yappr-mlx-server.
   v1-baseline          Qwen3-1.7B Q8 via llama-server. The first working cleanup setup.
@@ -68,13 +68,41 @@ Prompt and config are hashed independently, so editing the prompt without bumpin
 
 Read by `bin/yappr` at call time:
 
-| Var             | Default                              | Purpose                                                                  |
-|-----------------|--------------------------------------|--------------------------------------------------------------------------|
-| `YAPPR_ROOT`    | `$HOME/toolkit/yappr`                | Repo root.                                                               |
-| `YAPPR_CONFIG`  | `$YAPPR_ROOT/configs/active.json`    | Path to active config. Override for one-off tests without swapping symlink. |
-| `YAPPR_QUIET`   | `0`                                  | `1` = stdout is just the streamed text, no end-of-run report. Hammerspoon sets this. |
-| `YAPPR_COPY`    | `0`                                  | `1` = also `pbcopy` the cleaned text.                                    |
-| `YAPPR_DEBUG`   | `1`                                  | `1` = verbose log lines to the per-run log file.                         |
+| Variable | Default | Description |
+|---|---|---|
+| `YAPPR_ROOT` | auto-detected | Repo/source root |
+| `YAPPR_CONFIG` | `$YAPPR_CONFIG_HOME/configs/active.json` | Active config file path |
+| `YAPPR_CONFIG_HOME` | `~/.config/yappr` | User config directory |
+| `YAPPR_STATE_HOME` | `~/.local/state/yappr` | Logs and metrics directory |
+| `YAPPR_DATA_HOME` | `~/.local/share/yappr` | Build output and shared data |
+| `YAPPR_CACHE_HOME` | `~/.cache/yappr` | Cache directory |
+| `YAPPR_RUNTIME_DIR` | `/tmp/yappr-$(id -u)` | Socket, PID, and trace log |
+| `YAPPR_SOCKET` | `$YAPPR_RUNTIME_DIR/stt.sock` | Unix socket to the STT daemon |
+| `YAPPR_TRACE_LOG` | `$YAPPR_RUNTIME_DIR/trace.log` | Per-session timing trace |
+| `YAPPR_DAEMON_LOG` | `$YAPPR_STATE_HOME/logs/daemon.log` | Daemon log file |
+| `YAPPR_DAEMON_PID` | `$YAPPR_RUNTIME_DIR/daemon.pid` | Daemon PID file |
+| `YAPPR_METRICS_DIR` | `$YAPPR_STATE_HOME/metrics` | Override metrics directory |
+| `YAPPR_QUIET` | `0` | `1` = stdout is just the streamed text, no end-of-run report. Hammerspoon sets this. |
+| `YAPPR_COPY` | `0` | `1` = also `pbcopy` the cleaned text. |
+| `YAPPR_DEBUG` | `1` | `1` = verbose log lines to the per-run log file. |
+
+### User config directory vs. shipped defaults
+
+yappr looks for configs in two places, in order:
+
+1. **User config dir** — `$YAPPR_CONFIG_HOME/configs/` (default: `~/.config/yappr/configs/`)
+2. **Shipped defaults** — `$YAPPR_ROOT/configs/` (inside the cloned repo)
+
+`install.sh` seeds the user config dir with the shipped defaults on first install. After that, edit files in `$YAPPR_CONFIG_HOME/` without touching the repo.
+
+**Switching configs:**
+```bash
+yappr config list           # list available configs
+yappr config use fast       # switch to ~/.config/yappr/configs/fast.json
+yappr config show           # print active config
+```
+
+**Prompt file resolution:** `prompt_file` in the config is resolved in the same order — user config dir first, repo second.
 
 ## Adding a new config
 
@@ -115,7 +143,7 @@ yappr-stats --compare-configs default v4-spec-decoding
 Point at a config explicitly without changing the symlink:
 
 ```bash
-YAPPR_CONFIG=~/toolkit/yappr/configs/v2-mlx-q4.json yappr
+YAPPR_CONFIG=$YAPPR_CONFIG_HOME/configs/v2-mlx-q4.json yappr
 ```
 
 Useful for one-off tests without disrupting your default.
@@ -129,6 +157,6 @@ The STT side of the pipeline lives in `swift/yappr-stt-daemon/`. Its parameters 
 | Model               | Nemotron 0.6B     | `swift/yappr-stt-daemon/Sources/YapprSttDaemon/Daemon.swift` (`chunkSize`, `cacheSubdir`) |
 | Chunk size          | 560 ms            | same                                                                    |
 | HAL buffer          | 256 frames        | `MicCapture.swift`                                                      |
-| Socket path         | `/tmp/yappr-stt.sock` | `Daemon.swift` (`socketPath`)                                       |
+| Socket path         | `$YAPPR_RUNTIME_DIR/stt.sock` | `Daemon.swift` (`socketPath`)                                       |
 
 To switch any of these: edit the constant, `swift build -c release`, restart the daemon.

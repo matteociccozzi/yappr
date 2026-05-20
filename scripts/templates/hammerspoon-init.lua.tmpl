@@ -1,0 +1,76 @@
+-- @yappr-installed@ (managed by scripts/install.sh — re-run install to regenerate)
+-- yappr: hold Ctrl+Option+Y to dictate.
+-- Press → spawn bin/yappr, which opens the yappr-stt-daemon socket.
+-- Release → SIGTERM to bin/yappr → forwarded to YapprSttConnect
+--         → half-closes socket → daemon finalizes transcript.
+-- bin/yappr runs LLM cleanup and streams cleaned tokens to stdout,
+-- which Hammerspoon types at the cursor.
+
+local YAPPR_BIN      = "@YAPPR_BIN@"
+local YAPPR_TRACE_LOG = "@YAPPR_TRACE_LOG@"
+
+local recording = false  -- guard against keyDown autorepeat
+local task = nil
+
+local function trace(event)
+  local us = math.floor(hs.timer.secondsSinceEpoch() * 1e6)
+  local f = io.open(YAPPR_TRACE_LOG, "a")
+  if f then
+    f:write(string.format("%d hs %s\n", us, event))
+    f:close()
+  end
+end
+
+local function start()
+  trace("hs_press")
+  hs.alert.closeAll()
+  hs.alert.show("🎙️ Recording…", 9999)
+
+  local streamCallback = function(_taskHandle, stdOut, _stdErr)
+    if stdOut and #stdOut > 0 then
+      hs.eventtap.keyStrokes(stdOut)
+    end
+    return true
+  end
+
+  local finalCallback = function(exitCode, _stdOut, stdErr)
+    hs.alert.closeAll()
+    if exitCode ~= 0 then
+      local msg = (stdErr and #stdErr > 0) and stdErr:sub(-200) or ("rc=" .. tostring(exitCode))
+      print("[yappr] failed: " .. msg)
+      hs.alert.show("❌ " .. msg:sub(1, 120), 3)
+    end
+  end
+
+  task = hs.task.new(
+    "/bin/bash",
+    finalCallback,
+    streamCallback,
+    {
+      "-c",
+      "YAPPR_QUIET=1 PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin " .. YAPPR_BIN,
+    }
+  )
+  trace("hs_task_start_call")
+  task:start()
+  trace("hs_task_start_return")
+end
+
+local function stop()
+  trace("hs_release")
+  if task then
+    task:terminate()
+    task = nil
+  end
+end
+
+hs.hotkey.bind({"ctrl", "alt"}, "y",
+  function()
+    if not recording then recording = true; start() end
+  end,
+  function()
+    if recording then recording = false; stop() end
+  end
+)
+
+hs.alert.show("yappr loaded — hold Ctrl+Option+Y to dictate", 2)

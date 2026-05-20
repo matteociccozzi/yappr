@@ -3,10 +3,10 @@
 Three observability surfaces, in order of usefulness when something feels off:
 
 1. **`bin/yappr-trace`** — end-to-end timeline of a dictation (Hammerspoon → socket client → daemon). Best for latency questions.
-2. **`/tmp/yappr-daemon.log`** — what the long-running Swift daemon is doing. Best for "why did it fail to start the mic".
-3. **`logs/<timestamp>.log`** — one file per `yappr` invocation. Best for cleanup / LLM-side issues.
+2. **`$YAPPR_STATE_HOME/logs/daemon.log`** — what the long-running Swift daemon is doing. Best for "why did it fail to start the mic".
+3. **`$YAPPR_STATE_HOME/logs/<timestamp>.log`** — one file per `yappr` invocation. Best for cleanup / LLM-side issues.
 
-Plus `metrics/YYYY-MM.jsonl` for cross-run analysis (see `bin/yappr-stats`).
+Plus `$YAPPR_STATE_HOME/metrics/YYYY-MM.jsonl` for cross-run analysis (see `bin/yappr-stats`).
 
 ---
 
@@ -15,8 +15,9 @@ Plus `metrics/YYYY-MM.jsonl` for cross-run analysis (see `bin/yappr-stats`).
 A push-to-talk session emits events from three processes into a single append-only file:
 
 ```
-/tmp/yappr-trace.log
+$YAPPR_RUNTIME_DIR/trace.log
 ```
+(default: `/tmp/yappr-<uid>/trace.log`)
 
 Format is one event per line: `<unix_microseconds> <source> <event> [k=v k=v ...]`. Writes are atomic per-syscall, so concurrent writers from Hammerspoon Lua, `YapprSttConnect`, and the daemon interleave safely.
 
@@ -98,13 +99,13 @@ daemon_write_done                daemon    1341.30      0.50   audio_ms=1217
 
 ## Daemon logs
 
-The Swift daemon writes to stderr; the launchd unit (or however you run it) typically redirects to `/tmp/yappr-daemon.log`. Lines worth grepping:
+The Swift daemon writes to stderr; the launchd unit (or however you run it) typically redirects to `$YAPPR_STATE_HOME/logs/daemon.log`. Lines worth grepping:
 
 - `models loaded` — STT model weights mmap'd.
 - `encoder warmed` — first encoder pass run, kernels compiled.
 - `mic prepared` — tap installed, converter built; no HAL stream open yet.
 - `mic warmed` — brief `start()`/`stop()` to pay first-`start()` cost.
-- `listening on /tmp/yappr-stt.sock` — ready for clients.
+- `listening on $YAPPR_RUNTIME_DIR/stt.sock` — ready for clients.
 - `session telemetry: tap_fires=… tap_frames_native=… ingest_calls=… converted_samples_16k=…` — per-session capture-side counters.
 - `session done: audio_ms=… finalize=…ms total=…ms` — overall timing.
 - `input format changed: …→… — rebuilding tap + converter` — device format switched (e.g. AirPods connected mid-life); daemon handled it.
@@ -114,13 +115,13 @@ The Swift daemon writes to stderr; the launchd unit (or however you run it) typi
 
 ## Per-run logs
 
-`logs/<timestamp>.log` — one file per `yappr` invocation, includes every stage transition, the LLM request, and stderr from `yappr-llm-call`. Path is printed to stderr at the end of each (non-quiet) run.
+`$YAPPR_STATE_HOME/logs/<timestamp>.log` — one file per `yappr` invocation, includes every stage transition, the LLM request, and stderr from `yappr-llm-call`. Path is printed to stderr at the end of each (non-quiet) run.
 
 ---
 
 ## Metrics
 
-`metrics/<YYYY-MM>.jsonl` — one JSON record per run. Keys:
+`$YAPPR_STATE_HOME/metrics/<YYYY-MM>.jsonl` — one JSON record per run. Keys:
 
 - `audio_seconds`, `stt_ms`, `stt_total_held_ms`
 - `llm_ttft_ms`, `llm_total_ms`, `prompt_tokens`, `completion_tokens`
@@ -135,9 +136,9 @@ The prompt and config hashes are there so you can A/B by filtering on them in `y
 
 ### Socket not found
 
-**Symptom:** `yappr` exits with `socket not found at /tmp/yappr-stt.sock`.
+**Symptom:** `yappr` exits with `socket not found at $YAPPR_RUNTIME_DIR/stt.sock`.
 
-**Cause:** The daemon isn't running. Start it (`scripts/launch-daemon.sh` or whatever you wired up). Verify with `lsof /tmp/yappr-stt.sock` or by tailing `/tmp/yappr-daemon.log` for `listening on`.
+**Cause:** The daemon isn't running. Start it (`yappr daemon start` or run it directly). Verify with `lsof $YAPPR_RUNTIME_DIR/stt.sock` or by tailing `$YAPPR_STATE_HOME/logs/daemon.log` for `listening on`.
 
 ### `engine.start()` returns -10868
 
@@ -270,3 +271,15 @@ curl -s http://127.0.0.1:8081/health | jq '{cached_prefix_tokens, cold_prefills:
 ```
 
 See `docs/performance.md` for the full methodology.
+
+## Post-install verification: yappr doctor
+
+Run `yappr doctor` to check all components in one step:
+
+```bash
+yappr doctor
+```
+
+It checks: platform (Apple Silicon), required tools on PATH, XDG dirs, active config validity, daemon binary + codesign, daemon process + socket, LLM endpoint reachability, Nemotron model cache, Hammerspoon installation, and `mlx_lm` availability.
+
+Exit code 0 = all checks passed. Exit code 1 = one or more checks failed (with actionable hints printed).

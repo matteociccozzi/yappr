@@ -25,8 +25,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 YAPPR_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DAEMON_DIR="$YAPPR_ROOT/swift/yappr-stt-daemon"
-DAEMON_BIN="$DAEMON_DIR/.build/release/YapprSttDaemon"
-CONNECT_BIN="$DAEMON_DIR/.build/release/YapprSttConnect"
+YAPPR_DATA_HOME="${YAPPR_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/yappr}"
+YAPPR_CONFIG_HOME="${YAPPR_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/yappr}"
+YAPPR_STATE_HOME="${YAPPR_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/yappr}"
+YAPPR_RUNTIME_DIR="${YAPPR_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/tmp/yappr-$(id -u)}}"
+DAEMON_BIN="$YAPPR_DATA_HOME/build/yappr-stt-daemon/release/YapprSttDaemon"
+CONNECT_BIN="$YAPPR_DATA_HOME/build/yappr-stt-daemon/release/YapprSttConnect"
 
 REQUIRED_FORMULAS=("jq" "python@3.12")
 
@@ -95,7 +99,7 @@ prompt_yn() {
   if [[ $ASSUME_YES -eq 1 ]]; then return 0; fi
   if [[ "$default" == "Y" ]]; then suffix="[Y/n]"; else suffix="[y/N]"; fi
   while true; do
-    read -p "    $prompt $suffix " reply
+    read -rp "    $prompt $suffix " reply
     reply="${reply:-$default}"
     case "$reply" in
       [Yy]*) return 0 ;;
@@ -127,6 +131,25 @@ if [[ ! -d "$DAEMON_DIR" ]]; then
   fail "Cannot find daemon source at $DAEMON_DIR. Is this a yappr checkout?"
 fi
 ok "Repo root: $YAPPR_ROOT"
+
+# Create XDG state and runtime dirs early so subsequent steps can log to them
+mkdir -p "$YAPPR_STATE_HOME/logs" "$YAPPR_STATE_HOME/metrics"
+mkdir -p "$YAPPR_RUNTIME_DIR"
+chmod 0700 "$YAPPR_RUNTIME_DIR"
+
+# -----------------------------------------------------------------------------
+# 1b. Submodules
+# -----------------------------------------------------------------------------
+
+step "Submodules (vendor/FluidAudio)"
+
+if [[ ! -f "$YAPPR_ROOT/vendor/FluidAudio/Package.swift" ]]; then
+  info "Initializing vendor/FluidAudio submodule..."
+  git -C "$YAPPR_ROOT" submodule update --init --recursive
+fi
+[[ -f "$YAPPR_ROOT/vendor/FluidAudio/Package.swift" ]] \
+  || fail "vendor/FluidAudio submodule init failed. Try: git submodule update --init"
+ok "vendor/FluidAudio present"
 
 # -----------------------------------------------------------------------------
 # 2. Xcode CLI tools
@@ -195,6 +218,34 @@ if [[ $SKIP_OPTIONAL -eq 0 ]]; then
       warn "Skipped Hammerspoon. CLI mode only."
     fi
   fi
+
+  # Write Hammerspoon init.lua from template
+  step "Hammerspoon config (~/.hammerspoon/init.lua)"
+  if [[ -d "/Applications/Hammerspoon.app" ]]; then
+    TMPL_FILE="$YAPPR_ROOT/scripts/templates/hammerspoon-init.lua.tmpl"
+    HS_DIR="$HOME/.hammerspoon"
+    HS_FILE="$HS_DIR/init.lua"
+    mkdir -p "$HS_DIR"
+    YAPPR_TRACE_DEFAULT="/tmp/yappr-$(id -u)/trace.log"
+    if [[ -f "$HS_FILE" ]] && ! grep -q "@yappr-installed@" "$HS_FILE" 2>/dev/null; then
+      warn "$HS_FILE already exists and is not yappr-managed."
+      if prompt_yn "Back it up and replace with yappr's config?" "N"; then
+        cp "$HS_FILE" "$HS_FILE.bak.$(date +%s)"
+        ok "backed up to $HS_FILE.bak.*"
+      else
+        warn "Skipped. Wire init.lua manually — see docs/installation.md (Hammerspoon section)."
+        WROTE_HS=0
+      fi
+    fi
+    if [[ "${WROTE_HS:-1}" -eq 1 ]]; then
+      sed \
+        -e "s|@YAPPR_BIN@|$YAPPR_ROOT/bin/yappr|g" \
+        -e "s|@YAPPR_TRACE_LOG@|$YAPPR_TRACE_DEFAULT|g" \
+        "$TMPL_FILE" > "$HS_FILE"
+      ok "wrote $HS_FILE"
+      info "Reload Hammerspoon: menu bar icon → Reload Config"
+    fi
+  fi
 fi
 
 # -----------------------------------------------------------------------------
@@ -222,6 +273,31 @@ if [[ $SKIP_OPTIONAL -eq 0 ]]; then
 fi
 
 # -----------------------------------------------------------------------------
+# User config directory
+# -----------------------------------------------------------------------------
+
+step "User config directory ($YAPPR_CONFIG_HOME)"
+
+mkdir -p "$YAPPR_CONFIG_HOME/configs" "$YAPPR_CONFIG_HOME/prompts"
+
+if [[ ! -f "$YAPPR_CONFIG_HOME/configs/default.json" ]]; then
+  cp "$YAPPR_ROOT/configs/default.json" "$YAPPR_CONFIG_HOME/configs/default.json"
+  ok "seeded configs/default.json"
+fi
+
+if [[ ! -f "$YAPPR_CONFIG_HOME/prompts/cleanup.txt" ]]; then
+  cp "$YAPPR_ROOT/prompts/cleanup.txt" "$YAPPR_CONFIG_HOME/prompts/cleanup.txt"
+  ok "seeded prompts/cleanup.txt"
+fi
+
+if [[ ! -L "$YAPPR_CONFIG_HOME/configs/active.json" ]]; then
+  ln -s default.json "$YAPPR_CONFIG_HOME/configs/active.json"
+  ok "active config → default.json"
+fi
+
+ok "user config at $YAPPR_CONFIG_HOME"
+
+# -----------------------------------------------------------------------------
 # 7. Build the Swift daemon
 # -----------------------------------------------------------------------------
 
@@ -238,9 +314,41 @@ fi
 
 if [[ $NEED_BUILD -eq 1 ]]; then
   info "Building (first build can take ~30s)..."
-  (cd "$DAEMON_DIR" && swift build -c release)
+  (cd "$DAEMON_DIR" && \
+    swift build -c release \
+      --scratch-path "$YAPPR_DATA_HOME/build/yappr-stt-daemon")
   ok "Built YapprSttDaemon"
   ok "Built YapprSttConnect"
+fi
+
+# -----------------------------------------------------------------------------
+# 7b. Populate Nemotron model cache
+# -----------------------------------------------------------------------------
+
+step "Nemotron model cache (~/.cache/fluidaudio/)"
+
+NEMOTRON_CACHE="$HOME/.cache/fluidaudio/models/nemotron-streaming/560ms"
+if [[ -f "$NEMOTRON_CACHE/preprocessor.mlmodelc/coremldata.bin" ]]; then
+  ok "models already cached at $NEMOTRON_CACHE"
+else
+  info "Building fluidaudiocli and downloading Nemotron models (~200 MB, one-time)..."
+  (cd "$YAPPR_ROOT/vendor/FluidAudio" \
+    && swift build -c release --product fluidaudiocli 2>&1 | tail -3)
+  WARMUP_WAV="$(mktemp).wav"
+  python3 - <<PY
+import wave, struct
+with wave.open("$WARMUP_WAV", "w") as f:
+    f.setnchannels(1); f.setsampwidth(2); f.setframerate(16000)
+    f.writeframes(struct.pack("<" + "h" * 16000, *([0] * 16000)))
+PY
+  "$YAPPR_ROOT/vendor/FluidAudio/.build/release/fluidaudiocli" \
+    nemotron-transcribe --input "$WARMUP_WAV" --chunk 560 >/dev/null 2>&1
+  rm -f "$WARMUP_WAV"
+  if [[ -f "$NEMOTRON_CACHE/preprocessor.mlmodelc/coremldata.bin" ]]; then
+    ok "models cached at $NEMOTRON_CACHE"
+  else
+    fail "Model cache still empty after warmup. Run manually: vendor/FluidAudio/.build/release/fluidaudiocli nemotron-transcribe --input <any.wav> --chunk 560"
+  fi
 fi
 
 # -----------------------------------------------------------------------------
@@ -306,36 +414,74 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# 10. Summary
+# 10. Daemon auto-start at login (launchd)
+# -----------------------------------------------------------------------------
+
+step "Daemon auto-start at login (launchd)"
+
+PLIST_DEST="$HOME/Library/LaunchAgents/com.yappr.daemon.plist"
+PLIST_TMPL="$YAPPR_ROOT/scripts/templates/com.yappr.daemon.plist.tmpl"
+
+YAPPR_SOCKET_DEFAULT="$YAPPR_RUNTIME_DIR/stt.sock"
+YAPPR_DAEMON_PID_DEFAULT="$YAPPR_RUNTIME_DIR/stt-daemon.pid"
+YAPPR_DAEMON_LOG_DEFAULT="$YAPPR_STATE_HOME/logs/stt-daemon.log"
+
+if [[ $SKIP_OPTIONAL -eq 0 ]]; then
+  mkdir -p "$HOME/Library/LaunchAgents"
+  sed \
+    -e "s|@DAEMON_BIN@|$DAEMON_BIN|g" \
+    -e "s|@YAPPR_ROOT@|$YAPPR_ROOT|g" \
+    -e "s|@YAPPR_STATE_HOME@|$YAPPR_STATE_HOME|g" \
+    -e "s|@YAPPR_RUNTIME_DIR@|$YAPPR_RUNTIME_DIR|g" \
+    -e "s|@YAPPR_SOCKET@|$YAPPR_SOCKET_DEFAULT|g" \
+    -e "s|@YAPPR_DAEMON_PID@|$YAPPR_DAEMON_PID_DEFAULT|g" \
+    -e "s|@YAPPR_DAEMON_LOG@|$YAPPR_DAEMON_LOG_DEFAULT|g" \
+    -e "s|@YAPPR_TRACE_LOG@|$YAPPR_TRACE_DEFAULT|g" \
+    "$PLIST_TMPL" > "$PLIST_DEST"
+  launchctl bootstrap "gui/$(id -u)" "$PLIST_DEST" 2>/dev/null \
+    || launchctl load "$PLIST_DEST" 2>/dev/null \
+    || warn "launchctl load failed — daemon will not auto-start. Start manually: yappr daemon start"
+  ok "launchd plist installed: $PLIST_DEST"
+else
+  info "Skipped launchd (--skip-optional). Start daemon manually: yappr daemon start"
+fi
+
+# -----------------------------------------------------------------------------
+# 11. Summary
 # -----------------------------------------------------------------------------
 
 cat <<EOF
 
-${BOLD}${GREEN}Install complete.${RESET}
+${BOLD}${GREEN}✅ Install complete.${RESET}
+
+${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}
+${BOLD}⚠️  Three permissions you must grant manually${RESET}
+   (macOS will not prompt until first use)
+
+  ${BOLD}1. Microphone${RESET} → YapprSttDaemon
+     ${DIM}System Settings → Privacy & Security → Microphone${RESET}
+
+  ${BOLD}2. Accessibility${RESET} → Hammerspoon
+     ${DIM}System Settings → Privacy & Security → Accessibility${RESET}
+
+  ${BOLD}3. Input Monitoring${RESET} → Hammerspoon
+     ${DIM}System Settings → Privacy & Security → Input Monitoring${RESET}
+
+${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}
 
 ${BOLD}Next steps:${RESET}
 
-  ${BOLD}1.${RESET} Start the daemon:
-       $DAEMON_BIN
-     On first launch, macOS will prompt for Microphone access. Grant it.
-     Leave the daemon running (in a tab, screen/tmux, or set up launchd
-     yourself if you want auto-start at login).
+  ${BOLD}1.${RESET} Start the STT daemon and MLX server:
+       yappr daemon start
+       yappr server start
 
-  ${BOLD}2.${RESET} Verify the socket appeared:
-       ls /tmp/yappr-stt.sock
+  ${BOLD}2.${RESET} Verify everything is healthy:
+       yappr doctor
 
-  ${BOLD}3.${RESET} Configure your LLM endpoint:
-       jq -r .llm.url "$YAPPR_ROOT/configs/active.json"
-     Default is local MLX at 127.0.0.1:8081. Edit if needed:
-       $YAPPR_BIN/yappr-config edit
+  ${BOLD}3.${RESET} Reload Hammerspoon config (menu bar icon → Reload Config)
+     then grant Accessibility + Input Monitoring when prompted.
 
-  ${BOLD}4.${RESET} (Hammerspoon users) Wire up the push-to-talk hotkey:
-       See $YAPPR_ROOT/docs/installation.md (Hammerspoon section)
-       Grant Accessibility + Input Monitoring when prompted.
+  ${BOLD}4.${RESET} Hold ${BOLD}Ctrl+Option+Y${RESET}, speak, release. Cleaned text types at cursor.
 
-  ${BOLD}5.${RESET} Test it:
-       In one terminal: $YAPPR_BIN/yappr-trace --tail
-       Hold your hotkey or run $YAPPR_BIN/yappr directly.
-
-For the full reference: $YAPPR_ROOT/docs/installation.md
+Full reference: $YAPPR_ROOT/docs/installation.md
 EOF
