@@ -1,8 +1,10 @@
 # 📊 Metrics
 
-Every `yappr` run appends one line to `metrics/<YYYY-MM>.jsonl`. Use `yappr-stats` to summarize and slice.
+Every `yappr` run appends one line to `$YAPPR_STATE_HOME/metrics/<YYYY-MM>.jsonl`. Use `yappr-stats` to summarize and slice.
 
-> See also: `docs/diagnostics.md` for `/tmp/yappr-trace.log`, the finer-grained per-stage span log emitted by the streaming daemon.
+> Metrics are stored in `$YAPPR_STATE_HOME/metrics/` (default: `~/.local/state/yappr/metrics/`). Override with `YAPPR_METRICS_DIR`.
+
+> See also: `docs/diagnostics.md` for `$YAPPR_RUNTIME_DIR/trace.log`, the finer-grained per-stage span log emitted by the streaming daemon.
 
 ## JSONL record schema
 
@@ -55,7 +57,7 @@ The streaming refactor changed what `stt_ms` measures:
 - **Pre-streaming**: `stt_ms` = total STT wall-clock (record + transcribe).
 - **Now** (`config_version: v3-streaming`): `stt_ms` = post-EOF finalize only. For end-to-end held time, use `stt_total_held_ms`.
 
-Rows from before the bump are still in `metrics/*.jsonl`. When A/B-comparing across versions, filter by `config_version` (e.g. `--compare-configs default v3-streaming`) and remember that `stt_ms` numbers from the two regimes are not comparable.
+Rows from before the bump are still in `$YAPPR_STATE_HOME/metrics/*.jsonl`. When A/B-comparing across versions, filter by `config_version` (e.g. `--compare-configs default v3-streaming`) and remember that `stt_ms` numbers from the two regimes are not comparable.
 
 ## `yappr-stats` commands
 
@@ -134,4 +136,4 @@ yappr-stats --raw | duckdb -c "SELECT config_version, AVG(llm_ttft_ms), COUNT(*)
 
 ## Clearing
 
-`yappr-stats --clear` archives `metrics/` to `metrics.bak.<YYYYMMDD-HHMMSS>/` (gitignored) and starts fresh. Useful before A/B-ing a big change.
+`yappr-stats --clear` archives `$YAPPR_STATE_HOME/metrics/` to `$YAPPR_STATE_HOME/metrics.bak.<YYYYMMDD-HHMMSS>/` (gitignored) and starts fresh. Useful before A/B-ing a big change.
