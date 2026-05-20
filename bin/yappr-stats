@@ -4,9 +4,6 @@
 Reads JSONL files from <YAPPR_ROOT>/metrics/*.jsonl.
 YAPPR_ROOT is auto-detected from the script location; override with the
 YAPPR_ROOT env var. Override the metrics dir directly with YAPPR_METRICS_DIR.
-
-To call from anywhere, add to your shell rc:
-  export PATH="/path/to/yappr/bin:$PATH"
 """
 
 from __future__ import annotations
@@ -52,6 +49,7 @@ STORED_METRICS = [
     "prompt_tokens",
     "completion_tokens",
     "audio_seconds",
+    "stt_total_held_ms",
     "raw_chars",
     "cleaned_chars",
 ]
@@ -267,7 +265,17 @@ def main(argv: list[str]) -> int:
                    help="archive all metric files to metrics.bak.<ts>/ (effectively wipes stats)")
     p.add_argument("-y", "--yes", action="store_true",
                    help="skip the confirmation prompt for --clear")
+    p.add_argument(
+        "--metrics-dir",
+        default=None,
+        metavar="DIR",
+        help=f"Override metrics directory (default: {paths.metrics_dir()})"
+    )
     args = p.parse_args(argv)
+
+    global METRICS_DIR
+    if args.metrics_dir:
+        METRICS_DIR = Path(args.metrics_dir)
 
     if args.clear:
         return cmd_clear(skip_prompt=args.yes)
