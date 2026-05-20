@@ -471,13 +471,12 @@ ${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━�
 
 ${BOLD}Next steps:${RESET}
 
-  ${BOLD}1.${RESET} Start the STT daemon:
-       $DAEMON_BIN
+  ${BOLD}1.${RESET} Start the STT daemon and MLX server:
+       yappr daemon start
+       yappr server start
 
-  ${BOLD}2.${RESET} Start the MLX inference server:
-       $YAPPR_ROOT/bin/yappr-mlx-server \\
-         --model mlx-community/Qwen3-1.7B-4bit \\
-         --system-prompt-file $YAPPR_ROOT/prompts/cleanup.txt
+  ${BOLD}2.${RESET} Verify everything is healthy:
+       yappr doctor
 
   ${BOLD}3.${RESET} Reload Hammerspoon config (menu bar icon → Reload Config)
      then grant Accessibility + Input Monitoring when prompted.
