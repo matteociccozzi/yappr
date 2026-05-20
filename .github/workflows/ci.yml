@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "feat/**"]
+  pull_request:
+    branches: ["main", "feat/**"]
+
+jobs:
+  build-and-lint:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install lint tools
+        run: |
+          brew install shellcheck
+          pip install ruff
+
+      - name: Swift build
+        run: |
+          source bin/_yappr-paths.sh
+          cd swift/yappr-stt-daemon
+          swift build -c release \
+            --scratch-path "$RUNNER_TEMP/build/yappr-stt-daemon"
+
+      - name: Ad-hoc codesign
+        run: |
+          source bin/_yappr-paths.sh
+          DAEMON_BIN="$RUNNER_TEMP/build/yappr-stt-daemon/release/YapprSttDaemon"
+          CONNECT_BIN="$RUNNER_TEMP/build/yappr-stt-daemon/release/YapprSttConnect"
+          codesign --force --sign - "$DAEMON_BIN"
+          codesign --force --sign - "$CONNECT_BIN"
+
+      - name: Shellcheck
+        run: |
+          shellcheck bin/_yappr-paths.sh bin/yappr bin/yappr-dictate \
+            bin/yappr-daemon bin/yappr-server bin/yappr-help \
+            scripts/install.sh scripts/migrate-runtime-state.sh \
+            scripts/check-no-runtime-writes.sh \
+            diagnostics/yappr-probe-caching
+
+      - name: Ruff (Python lint)
+        run: |
+          ruff check bin/_yappr_paths.py bin/yappr-stats bin/yappr-doctor \
+            bin/yappr-mlx-server.py
+
+      - name: No runtime writes in source tree
+        run: bash scripts/check-no-runtime-writes.sh
