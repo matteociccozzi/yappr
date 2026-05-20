@@ -6,16 +6,20 @@ _yappr_completions() {
   subcommands="dictate daemon config stats trace doctor server help version"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
+    # shellcheck disable=SC2207
     COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
     return
   fi
 
   case "$prev" in
     daemon|server)
+      # shellcheck disable=SC2207
       COMPREPLY=($(compgen -W "start stop restart status logs tail" -- "$cur")) ;;
     config)
+      # shellcheck disable=SC2207
       COMPREPLY=($(compgen -W "list use show" -- "$cur")) ;;
     stats)
+      # shellcheck disable=SC2207
       COMPREPLY=($(compgen -W "--metrics-dir --help" -- "$cur")) ;;
   esac
 }

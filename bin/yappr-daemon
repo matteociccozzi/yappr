@@ -46,6 +46,7 @@ _stop() {
   pid="$(cat "$YAPPR_DAEMON_PID")"
   kill -TERM "$pid" 2>/dev/null || true
   local i
+  # shellcheck disable=SC2034
   for i in $(seq 1 4); do
     sleep 0.5
     if ! kill -0 "$pid" 2>/dev/null; then

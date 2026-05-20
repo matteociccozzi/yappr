@@ -79,7 +79,7 @@ else:
     if r.returncode == 0:
         ok(f"Daemon binary codesigned: {daemon_bin.name}")
     else:
-        warn(f"Daemon binary not codesigned (codesign -dv failed) — may lose mic TCC on rebuild")
+        warn("Daemon binary not codesigned (codesign -dv failed) — may lose mic TCC on rebuild")
 
 # 6. Daemon process
 pid_file = paths.daemon_pid()
@@ -91,9 +91,9 @@ if pid_file.exists():
         ok(f"Daemon running (pid={pid})")
         running = True
     except (ValueError, ProcessLookupError):
-        fail(f"Daemon PID file exists but process is dead — run 'yappr daemon start'")
+        fail("Daemon PID file exists but process is dead — run 'yappr daemon start'")
 else:
-    fail(f"Daemon not running — run 'yappr daemon start'")
+    fail("Daemon not running — run 'yappr daemon start'")
 
 # 7. Socket
 sock_path = paths.socket()
@@ -142,11 +142,11 @@ if hs_lua.exists():
     content = hs_lua.read_text()
     yappr_bin = str(paths.root() / "bin" / "yappr")
     if yappr_bin in content or "yappr" in content:
-        ok(f"~/.hammerspoon/init.lua references yappr")
+        ok("~/.hammerspoon/init.lua references yappr")
     else:
-        warn(f"~/.hammerspoon/init.lua exists but may not reference yappr binary")
+        warn("~/.hammerspoon/init.lua exists but may not reference yappr binary")
 else:
-    fail(f"~/.hammerspoon/init.lua not found — run scripts/install.sh to write it")
+    fail("~/.hammerspoon/init.lua not found — run scripts/install.sh to write it")
 
 # 11. mlx_lm
 if shutil.which("mlx_lm.server") or shutil.which("mlx_lm"):
