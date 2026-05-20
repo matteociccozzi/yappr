@@ -74,9 +74,7 @@ This is the part that makes yappr feel like *dictation*, not just transcription.
 
 ---
 
-## 🚀 Quick install
-
-macOS on Apple Silicon (M1/M2/M3/M4). Three lines:
+## Quick Install
 
 ```bash
 git clone --recurse-submodules https://github.com/matteociccozzi/yappr.git
@@ -84,11 +82,22 @@ cd yappr
 ./scripts/install.sh
 ```
 
-The script is idempotent and handles dependencies, the Swift build, codesigning, and PATH setup. Three permissions it **can't** grant for you (macOS will prompt):
+> If you already cloned without `--recurse-submodules`, run:
+> `git submodule update --init --recursive`
 
-- 🎙️ Microphone access for the daemon (system dialog on first launch)
-- ⌨️ Accessibility + Input Monitoring for Hammerspoon (push-to-talk)
-- 🧠 LLM endpoint configuration (edit `configs/active.json`)
+> **Three permissions you must grant manually** (macOS will not prompt until first use):
+>
+> | Permission | App | Where |
+> |---|---|---|
+> | Microphone | YapprSttDaemon | System Settings → Privacy & Security → Microphone |
+> | Accessibility | Hammerspoon | System Settings → Privacy & Security → Accessibility |
+> | Input Monitoring | Hammerspoon | System Settings → Privacy & Security → Input Monitoring |
+
+After install, verify everything is working:
+
+```bash
+yappr doctor
+```
 
 Full step-by-step walkthrough: [`docs/installation.md`](docs/installation.md).
 
