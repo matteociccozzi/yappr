@@ -100,6 +100,7 @@ EXAMPLE
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 import urllib.error
@@ -145,6 +146,45 @@ def main() -> int:
     completion_tokens = 0
     error: str | None = None
 
+    # Streaming think-block suppressor.
+    # Qwen3 occasionally generates <think>...</think> reasoning tokens even
+    # when enable_thinking=false is set in the chat template. We buffer output
+    # and drop anything inside a think block before it reaches stdout (and
+    # therefore Hammerspoon, which types chunks at the cursor in real time).
+    _THINK_OPEN = "<think>"
+    _THINK_CLOSE = "</think>"
+    _stream_buf = ""
+    _think_depth = 0
+
+    def _flush_stream() -> None:
+        nonlocal _stream_buf, _think_depth
+        out_parts: list[str] = []
+        while _stream_buf:
+            if _think_depth == 0:
+                pos = _stream_buf.find(_THINK_OPEN)
+                if pos == -1:
+                    # No opening tag; keep a partial-match window buffered.
+                    cutoff = max(0, len(_stream_buf) - len(_THINK_OPEN) + 1)
+                    out_parts.append(_stream_buf[:cutoff])
+                    _stream_buf = _stream_buf[cutoff:]
+                    break
+                out_parts.append(_stream_buf[:pos])
+                _stream_buf = _stream_buf[pos + len(_THINK_OPEN):]
+                _think_depth = 1
+            else:
+                pos = _stream_buf.find(_THINK_CLOSE)
+                if pos == -1:
+                    cutoff = max(0, len(_stream_buf) - len(_THINK_CLOSE) + 1)
+                    _stream_buf = _stream_buf[cutoff:]
+                    break
+                _stream_buf = _stream_buf[pos + len(_THINK_CLOSE):]
+                _think_depth = 0
+                _stream_buf = _stream_buf.lstrip("\n")
+        out = "".join(out_parts)
+        if out:
+            sys.stdout.write(out)
+            sys.stdout.flush()
+
     t0 = time.monotonic()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -168,14 +208,18 @@ def main() -> int:
                         if ttft_ms is None:
                             ttft_ms = int((time.monotonic() - t0) * 1000)
                         text_parts.append(content)
-                        # Stream text out as it arrives
-                        sys.stdout.write(content)
-                        sys.stdout.flush()
+                        _stream_buf += content
+                        _flush_stream()
 
                 usage = chunk.get("usage")
                 if usage:
                     prompt_tokens = int(usage.get("prompt_tokens", prompt_tokens) or 0)
                     completion_tokens = int(usage.get("completion_tokens", completion_tokens) or 0)
+
+        # Flush anything left in the buffer (e.g. partial tag that never closed).
+        if _stream_buf and _think_depth == 0:
+            sys.stdout.write(_stream_buf)
+            sys.stdout.flush()
     except urllib.error.HTTPError as e:
         error = f"http {e.code}: {e.read().decode('utf-8', errors='replace')[:500]}"
     except urllib.error.URLError as e:
@@ -187,9 +231,12 @@ def main() -> int:
 
     total_ms = int((time.monotonic() - t0) * 1000)
 
+    raw_text = "".join(text_parts)
+    clean_text = re.sub(r"<think>.*?</think>\s*", "", raw_text, flags=re.DOTALL).strip()
+
     # Final metric line on stderr — downstream consumer reads the LAST stderr line.
     json.dump({
-        "text": "".join(text_parts),
+        "text": clean_text,
         "ttft_ms": ttft_ms if ttft_ms is not None else total_ms,
         "total_ms": total_ms,
         "prompt_tokens": prompt_tokens,
