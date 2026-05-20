@@ -10,7 +10,8 @@ The pipeline has two distinct lifecycles:
   similarly stays resident, holding the Qwen3-1.7B-4bit model and the
   prefilled-system-prompt KV cache.
 - **Per-dictation**: Hammerspoon spawns `bin/yappr` on hotkey-press; `bin/yappr`
-  spawns `YapprSttConnect`, runs the cleanup LLM, appends a metric, exits.
+  is a thin subcommand dispatcher that defaults to `bin/yappr-dictate`, which
+  spawns `YapprSttConnect`, runs the cleanup LLM, appends a metric, and exits.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -22,7 +23,7 @@ The pipeline has two distinct lifecycles:
                                        │ spawn (bash -c, NOT -lc)
                                        ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│  bin/yappr  (bash orchestrator)                                              │
+│  bin/yappr  (subcommand dispatcher)  →  bin/yappr-dictate  (orchestrator)    │
 │                                                                              │
 │  1. FAST PATH — spawn YapprSttConnect FIRST, in background                   │
 │     (connect = daemon opens mic; everything else runs in parallel)           │
@@ -177,10 +178,18 @@ which gets written back as `<audio_ms>\t<text>\n` followed by `SHUT_WR`.
 Partial transcripts are never written; the client-side `SHUT_WR` is the only
 trigger for emitting text.
 
-## `bin/yappr` — bash orchestrator
+## `bin/yappr` — subcommand dispatcher
 
-Entry point Hammerspoon spawns on hotkey-press. The top-of-file docstring is
-the authoritative spec; this section is a synopsis. Stages, in order:
+`bin/yappr` is a thin git-style dispatcher. When invoked without a subcommand
+(as Hammerspoon does), it defaults to `dictate` and `exec`s `bin/yappr-dictate`.
+Other subcommands: `daemon`, `server`, `config`, `stats`, `trace`, `doctor`,
+`help`, `version`.
+
+## `bin/yappr-dictate` — bash orchestrator
+
+Entry point for dictation. Hammerspoon invokes `bin/yappr` which dispatches here.
+The top-of-file docstring is the authoritative spec; this section is a synopsis.
+Stages, in order:
 
 1. **Fast-path socket connect (latency-critical)**. Verify
    `$YAPPR_RUNTIME_DIR/stt.sock` exists, then spawn `YapprSttConnect` in the
@@ -276,8 +285,8 @@ Endpoints:
 
 - `POST /v1/chat/completions` — OpenAI-compatible, supports SSE streaming.
 - `GET /v1/models` — includes `cached_prefix_tokens`, `cached_prefix_hash`.
-- `GET /health` — `status`, `model`, `cached_prefix_tokens`, `cold_prefills`,
-  `warm_requests`.
+- `GET /health` — `status`, `model`, `cached_prefix_tokens`, `stats.cold_prefills`,
+  `stats.warm_requests`.
 
 See [`docs/performance.md`](performance.md) for measured numbers.
 
@@ -333,11 +342,18 @@ Usage: `yappr-trace` (last session), `yappr-trace --last N` (last N).
 
 ## Other binaries
 
-| Binary               | Role                                                        |
-| -------------------- | ----------------------------------------------------------- |
-| `bin/yappr-config`   | Atomic symlink-based config switching (`list / active / use NAME / show / diff`). See [`configuration.md`](configuration.md). |
-| `bin/yappr-stats`    | Reads `$YAPPR_STATE_HOME/metrics/*.jsonl`; default view = last-20-run summary with mean / p50 / p95 / max + histograms + A/B comparisons. See [`metrics.md`](metrics.md). |
-| `bin/yappr-trace`    | Renders `$YAPPR_RUNTIME_DIR/trace.log` (above).                     |
+| Binary                   | Role                                                        |
+| ------------------------ | ----------------------------------------------------------- |
+| `bin/yappr-daemon`       | Lifecycle manager for YapprSttDaemon: `start / stop / restart / status / logs / tail`. Reads paths from `_yappr-paths.sh`. |
+| `bin/yappr-server`       | Lifecycle manager for the MLX inference server: `start / stop / restart / status / logs / tail`. Reads model/port/prompt from active config. |
+| `bin/yappr-config`       | Atomic symlink-based config switching (`list / active / use NAME / show / diff / delete / path`). See [`configuration.md`](configuration.md). |
+| `bin/yappr-stats`        | Reads `$YAPPR_STATE_HOME/metrics/*.jsonl`; default view = last-20-run summary with mean / p50 / p95 / max + histograms + A/B comparisons. See [`metrics.md`](metrics.md). |
+| `bin/yappr-trace`        | Renders `$YAPPR_RUNTIME_DIR/trace.log` (above). |
+| `bin/yappr-doctor`       | Post-install health verifier. Runs 11 checks (platform, PATH, XDG dirs, config, daemon binary + codesign, daemon process + socket, LLM endpoint, Nemotron cache, Hammerspoon, mlx_lm). Exits 1 on any failure. |
+| `bin/yappr-help`         | Prints git-style subcommand listing with env var overrides table and docs links. |
+| `bin/yappr-mlx-server`   | Bash launcher for `yappr-mlx-server.py`. Resolves the uv-managed Python interpreter at runtime; falls back to `python3`. |
+| `bin/_yappr-paths.sh`    | Single source of truth for all `YAPPR_*` env vars (bash). Sourced by every bash script. Defines `yappr_ensure_dirs`, `yappr_metric_path`, `yappr_log_path`, `yappr_connect_binary`, `yappr_daemon_binary`. |
+| `bin/_yappr_paths.py`    | Python counterpart to `_yappr-paths.sh`. Imported by every Python script (`import _yappr_paths as paths`). Exposes `root()`, `config_home()`, `state_home()`, `runtime_dir()`, `socket()`, `trace_log()`, `metrics_dir()`, `logs_dir()`, `config_file()`, `daemon_binary()`, `connect_binary()`, `ensure_dirs()`. |
 
 ### Internal dev tools (not in `bin/`)
 
