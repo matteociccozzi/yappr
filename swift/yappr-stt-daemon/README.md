@@ -2,7 +2,7 @@
 
 Long-running Swift daemon that owns the microphone and runs streaming
 Nemotron 0.6B speech-to-text via FluidAudio. Speaks a small Unix-domain
-socket protocol at `/tmp/yappr-stt.sock`: connect to start a session, half-
+socket protocol. The daemon listens on `$YAPPR_RUNTIME_DIR/stt.sock` (default: `/tmp/yappr-<uid>/stt.sock`): connect to start a session, half-
 close write to finalize, read `audio_ms\ttranscript\n` back.
 
 This Swift package ships two executable targets:
@@ -15,11 +15,21 @@ This Swift package ships two executable targets:
 
 ## Build & run
 
+**Build:**
 ```bash
-cd ~/toolkit/yappr/swift/yappr-stt-daemon
-swift build -c release         # builds both YapprSttDaemon and YapprSttConnect
-codesign --force --sign - .build/release/YapprSttDaemon
-.build/release/YapprSttDaemon
+# Built by scripts/install.sh automatically. To rebuild manually:
+cd swift/yappr-stt-daemon
+swift build -c release \
+  --scratch-path ~/.local/share/yappr/build/yappr-stt-daemon
+```
+
+Binaries land at:
+- `~/.local/share/yappr/build/yappr-stt-daemon/release/YapprSttDaemon`
+- `~/.local/share/yappr/build/yappr-stt-daemon/release/YapprSttConnect`
+
+```bash
+codesign --force --sign - ~/.local/share/yappr/build/yappr-stt-daemon/release/YapprSttDaemon
+~/.local/share/yappr/build/yappr-stt-daemon/release/YapprSttDaemon
 ```
 
 The ad-hoc `codesign` is required for the daemon only (it's the binary that
@@ -68,7 +78,7 @@ wrong — restart the daemon.
 
 Single-connection-per-session. The client:
 
-1. `connect("/tmp/yappr-stt.sock")` — daemon accepts and starts the mic.
+1. `connect("$YAPPR_RUNTIME_DIR/stt.sock")` — daemon accepts and starts the mic.
 2. (No payload — audio comes from the mic, not the wire.)
 3. `shutdown(SHUT_WR)` — daemon stops the mic and finalizes.
 4. Read `<audio_ms>\t<transcript>\n` until EOF, then close.
@@ -92,3 +102,12 @@ delivered to the recognizer, in milliseconds.
   `YapprSttConnect/main.swift` and `~/.hammerspoon/init.lua`; together they
   give end-to-end stage timings that `bin/yappr-trace` renders.
 - `Sources/YapprSttConnect/main.swift` — the socket client binary.
+
+## Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `YAPPR_RUNTIME_DIR` | `/tmp/yappr-$(id -u)` | Directory for socket, PID, trace |
+| `YAPPR_SOCKET` | `$YAPPR_RUNTIME_DIR/stt.sock` | Unix socket path |
+| `YAPPR_DAEMON_PID` | `$YAPPR_RUNTIME_DIR/daemon.pid` | PID file |
+| `YAPPR_TRACE_LOG` | `$YAPPR_RUNTIME_DIR/trace.log` | Timing trace |
