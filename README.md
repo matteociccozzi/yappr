@@ -114,6 +114,8 @@ Full step-by-step walkthrough: [`docs/installation.md`](docs/installation.md).
 | 📊 [`docs/metrics.md`](docs/metrics.md)              | Per-run JSONL, `yappr-stats` summarizer & A/B comparisons           |
 | 🎨 [`docs/customization.md`](docs/customization.md)  | Cleanup prompt, custom vocab, hotkey choice, model swap             |
 | 🔬 [`docs/diagnostics.md`](docs/diagnostics.md)      | Troubleshooting + the cache probe (dev tool)                        |
+| [`docs/cli-reference.md`](docs/cli-reference.md) | All subcommands, flags, and env var overrides |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Dev setup, repo layout, how to contribute |
 
 ---
 
