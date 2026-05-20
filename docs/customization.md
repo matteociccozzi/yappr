@@ -2,7 +2,22 @@
 
 ## The cleanup prompt
 
-`prompts/cleanup.txt` is the system prompt the LLM sees on every call. Edit it freely. After saving:
+### Customizing the cleanup prompt
+
+Edit the prompt in your user config directory (not the repo):
+
+```bash
+nano ~/.config/yappr/prompts/cleanup.txt
+```
+
+If it doesn't exist yet, seed it:
+```bash
+cp $YAPPR_ROOT/prompts/cleanup.txt ~/.config/yappr/prompts/cleanup.txt
+```
+
+yappr resolves `prompt_file` by checking `$YAPPR_CONFIG_HOME/` first, then falling back to the repo.
+
+`$YAPPR_CONFIG_HOME/prompts/cleanup.txt` is the system prompt the LLM sees on every call. Edit it freely. After saving:
 
 - **Server side**: `yappr-mlx-server` detects the hash mismatch on the next request and rebuilds the cache automatically (~150 ms one-time cold prefill). No restart needed. The `[cache] system prompt changed (got X, had Y) — rebuilding` line appears in the server's stderr.
 - **Metrics**: `prompt_hash` in the JSONL changes. So you can A/B prompt edits with `yappr-stats --compare <iso-ts-before-edit>`.
@@ -53,15 +68,15 @@ To change it:
 ```bash
 # 1. Edit Daemon.swift — update chunkSize and cacheSubdir.
 # 2. Rebuild.
-cd ~/toolkit/yappr/swift/yappr-stt-daemon
+cd $YAPPR_ROOT/swift/yappr-stt-daemon
 swift build -c release
 
 # 3. Re-codesign (TCC keys mic permission to the signature).
-codesign --force --sign - .build/release/YapprSttDaemon
+codesign --force --sign - ~/.local/share/yappr/build/yappr-stt-daemon/release/YapprSttDaemon
 
 # 4. Restart the daemon.
 pkill -x YapprSttDaemon
-./.build/release/YapprSttDaemon
+~/.local/share/yappr/build/yappr-stt-daemon/release/YapprSttDaemon
 ```
 
 The first run after a model change populates `~/.cache/fluidaudio/models/nemotron-streaming/<cacheSubdir>/`; subsequent starts are fast.
@@ -73,7 +88,7 @@ Point `configs/active.json`'s `llm.model_name` at any other MLX model on Hugging
 ```bash
 yappr-mlx-server \
     --model              mlx-community/Qwen3-4B-4bit \
-    --system-prompt-file ~/toolkit/yappr/prompts/cleanup.txt \
+    --system-prompt-file ~/.config/yappr/prompts/cleanup.txt \
     --host 127.0.0.1 --port 8081
 ```
 
@@ -83,10 +98,20 @@ Any OpenAI-compatible chat-completions endpoint works — point `llm.url` at a r
 
 Configs are the right place for this — make a new one rather than editing `default.json` if you want to A/B:
 
+### Switching configurations
+
 ```bash
-cp configs/default.json configs/v4-qwen-4b.json
+yappr config list           # list available configs
+yappr config use fast       # switch active config
+yappr config show           # print active config
+```
+
+Custom configs live in `~/.config/yappr/configs/`.
+
+```bash
+cp ~/.config/yappr/configs/default.json ~/.config/yappr/configs/v4-qwen-4b.json
 # edit v4-qwen-4b.json to point at the bigger model
-yappr-config use v4-qwen-4b
+yappr config use v4-qwen-4b
 # dictate a few times, then:
 yappr-stats --compare-configs default v4-qwen-4b
 ```
