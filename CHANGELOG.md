@@ -8,6 +8,11 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-21
+
+### Fixed
+- Homebrew install: resolve `YapprSttDaemon`/`YapprSttConnect` from Homebrew bin dir instead of source build path
+
 ### Added
 - Homebrew tap: `brew install matteociccozzi/yappr/yappr`
 - Shell completions auto-installed by `scripts/install.sh` (bash/zsh/fish)
