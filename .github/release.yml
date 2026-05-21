@@ -1,0 +1,16 @@
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+      - dependencies
+  categories:
+    - title: "🚀 Features"
+      labels: [enhancement, feature]
+    - title: "🐛 Bug Fixes"
+      labels: [bug, fix]
+    - title: "📚 Documentation"
+      labels: [documentation, docs]
+    - title: "🔧 Infrastructure / CI"
+      labels: [ci, infrastructure, chore]
+    - title: "🧹 Maintenance"
+      labels: [refactor, cleanup, maintenance]
