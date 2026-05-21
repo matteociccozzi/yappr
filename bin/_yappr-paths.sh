@@ -56,10 +56,16 @@ yappr_log_path() {
 
 # Path to the built YapprSttConnect binary
 yappr_connect_binary() {
-  echo "$YAPPR_BUILD_DIR/yappr-stt-daemon/release/YapprSttConnect"
+  local beside="$(dirname "${BASH_SOURCE[0]}")/YapprSttConnect"
+  if [[ -x "$beside" ]]; then echo "$beside"
+  else echo "$YAPPR_BUILD_DIR/yappr-stt-daemon/release/YapprSttConnect"
+  fi
 }
 
 # Path to the built YapprSttDaemon binary
 yappr_daemon_binary() {
-  echo "$YAPPR_BUILD_DIR/yappr-stt-daemon/release/YapprSttDaemon"
+  local beside="$(dirname "${BASH_SOURCE[0]}")/YapprSttDaemon"
+  if [[ -x "$beside" ]]; then echo "$beside"
+  else echo "$YAPPR_BUILD_DIR/yappr-stt-daemon/release/YapprSttDaemon"
+  fi
 }
