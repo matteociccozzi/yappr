@@ -64,3 +64,13 @@ jobs:
             ${{ env.TARBALL }}
             ${{ env.CHECKSUM }}
           generate_release_notes: true
+
+      - name: Bump Homebrew formula
+        uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: yappr
+          tap-repository: matteociccozzi/homebrew-yappr
+          download-url: >-
+            https://github.com/matteociccozzi/yappr/releases/download/${{ github.ref_name }}/yappr-${{ env.VERSION }}-macos-arm64.tar.gz
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
