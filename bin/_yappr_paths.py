@@ -86,6 +86,15 @@ def logs_dir() -> Path:
     return Path(os.environ.get("YAPPR_LOGS_DIR") or state_home() / "logs")
 
 
+def share() -> Path:
+    """Asset root: share/yappr/ for Homebrew installs, repo root otherwise."""
+    r = root()
+    candidate = r / "share" / "yappr"
+    if candidate.is_dir():
+        return candidate
+    return r
+
+
 def config_file() -> Path:
     env = os.environ.get("YAPPR_CONFIG")
     if env:
@@ -93,7 +102,7 @@ def config_file() -> Path:
     user = config_home() / "configs" / "active.json"
     if user.exists():
         return user
-    return root() / "configs" / "active.json"
+    return share() / "configs" / "active.json"
 
 
 def build_dir() -> Path:
@@ -101,10 +110,16 @@ def build_dir() -> Path:
 
 
 def connect_binary() -> Path:
+    beside = Path(__file__).resolve().parent / "YapprSttConnect"
+    if beside.exists() and os.access(beside, os.X_OK):
+        return beside
     return build_dir() / "yappr-stt-daemon" / "release" / "YapprSttConnect"
 
 
 def daemon_binary() -> Path:
+    beside = Path(__file__).resolve().parent / "YapprSttDaemon"
+    if beside.exists() and os.access(beside, os.X_OK):
+        return beside
     return build_dir() / "yappr-stt-daemon" / "release" / "YapprSttDaemon"
 
 

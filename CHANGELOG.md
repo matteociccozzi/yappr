@@ -8,6 +8,15 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-05-21
+
+### Added
+- `yappr setup` now creates user config dirs, copies default config, and installs Hammerspoon init.lua
+
+### Fixed
+- `_yappr_paths.py`: add `share()`, fix `daemon_binary()`, `connect_binary()`, and `config_file()` for Homebrew layout
+- `yappr doctor` error messages now point to `yappr setup` instead of `scripts/install.sh`
+
 ## [0.1.4] - 2026-05-21
 
 ### Fixed

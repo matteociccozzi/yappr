@@ -50,7 +50,7 @@ for label, p in [
     if p.exists() and os.access(p, os.W_OK):
         ok(f"{label}: {p}")
     else:
-        fail(f"{label} missing or not writable: {p}  →  run 'yappr daemon start' or install.sh")
+        fail(f"{label} missing or not writable: {p}  →  run 'yappr setup'")
 
 # 4. Active config
 config = paths.config_file()
@@ -72,7 +72,7 @@ else:
 # 5. Daemon binary
 daemon_bin = paths.daemon_binary()
 if not daemon_bin.exists():
-    fail(f"Daemon binary not found: {daemon_bin}  →  run scripts/install.sh")
+    fail(f"Daemon binary not found: {daemon_bin}  →  run 'yappr setup'")
 else:
     r = subprocess.run(["codesign", "-dv", str(daemon_bin)],
                        capture_output=True)
@@ -146,7 +146,7 @@ if hs_lua.exists():
     else:
         warn("~/.hammerspoon/init.lua exists but may not reference yappr binary")
 else:
-    fail("~/.hammerspoon/init.lua not found — run scripts/install.sh to write it")
+    fail("~/.hammerspoon/init.lua not found — run 'yappr setup' to write it")
 
 # 11. mlx_lm
 if shutil.which("mlx_lm.server") or shutil.which("mlx_lm"):

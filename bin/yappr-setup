@@ -1,45 +1,65 @@
 #!/usr/bin/env bash
-# yappr-setup — one-time setup: Nemotron STT model + mlx-lm Python package.
-# Safe to re-run; skips steps that are already complete.
+# yappr-setup — one-time post-install setup. Safe to re-run.
+#   1. Create user config and state dirs
+#   2. Copy default config if not already present
+#   3. Install mlx-lm via uv
+#   4. Download Nemotron STT model (~200 MB)
+#   5. Install Hammerspoon init.lua (if Hammerspoon is present)
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/_yappr-paths.sh
 source "$HERE/_yappr-paths.sh"
 
 # ---------------------------------------------------------------------------
-# 1. mlx-lm (LLM cleanup server)
+# 1. User dirs
+# ---------------------------------------------------------------------------
+echo "yappr setup: creating user dirs…"
+mkdir -p \
+  "$YAPPR_CONFIG_HOME/configs" \
+  "$YAPPR_STATE_HOME/logs" \
+  "$YAPPR_STATE_HOME/metrics" \
+  "$YAPPR_RUNTIME_DIR"
+chmod 0700 "$YAPPR_RUNTIME_DIR"
+echo "yappr setup: dirs ok"
+
+# ---------------------------------------------------------------------------
+# 2. Default config
+# ---------------------------------------------------------------------------
+if [[ ! -f "$YAPPR_CONFIG_HOME/configs/active.json" ]]; then
+  cp "$YAPPR_SHARE/configs/default.json" "$YAPPR_CONFIG_HOME/configs/default.json"
+  ln -sf default.json "$YAPPR_CONFIG_HOME/configs/active.json"
+  echo "yappr setup: default config installed"
+else
+  echo "yappr setup: config already present"
+fi
+
+# ---------------------------------------------------------------------------
+# 3. mlx-lm
 # ---------------------------------------------------------------------------
 echo "yappr setup: checking mlx-lm…"
 if uv tool list 2>/dev/null | grep -q "mlx-lm"; then
   echo "yappr setup: mlx-lm already installed"
 else
-  if ! command -v uv >/dev/null 2>&1; then
-    echo "yappr setup: uv not found — install it first: brew install uv" >&2
-    exit 1
-  fi
   echo "yappr setup: installing mlx-lm via uv…"
   uv tool install mlx-lm
   echo "yappr setup: mlx-lm installed"
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Nemotron STT model (~200 MB, one-time download)
+# 4. Nemotron STT model
 # ---------------------------------------------------------------------------
 NEMOTRON_CACHE="$HOME/.cache/fluidaudio/models/nemotron-streaming/560ms"
-
 echo "yappr setup: checking Nemotron STT model…"
 if [[ -f "$NEMOTRON_CACHE/preprocessor.mlmodelc/coremldata.bin" ]]; then
   echo "yappr setup: Nemotron model already cached"
 else
-  # Find fluidaudiocli: Homebrew install puts it beside this script;
-  # source installs have it in the build dir.
   FLUIDAUDIOCLI=""
   if [[ -x "$HERE/fluidaudiocli" ]]; then
     FLUIDAUDIOCLI="$HERE/fluidaudiocli"
   elif [[ -x "$YAPPR_ROOT/vendor/FluidAudio/.build/release/fluidaudiocli" ]]; then
     FLUIDAUDIOCLI="$YAPPR_ROOT/vendor/FluidAudio/.build/release/fluidaudiocli"
   else
-    echo "yappr setup: fluidaudiocli not found." >&2
+    echo "yappr setup: fluidaudiocli not found — cannot download model" >&2
     echo "  If installed from source, run: bash scripts/install.sh" >&2
     exit 1
   fi
@@ -63,6 +83,34 @@ PY
     echo "  Run manually: $FLUIDAUDIOCLI nemotron-transcribe --input <any.wav> --chunk 560" >&2
     exit 1
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Hammerspoon init.lua
+# ---------------------------------------------------------------------------
+echo "yappr setup: checking Hammerspoon…"
+TMPL="$YAPPR_SHARE/scripts/templates/hammerspoon-init.lua.tmpl"
+HS_FILE="$HOME/.hammerspoon/init.lua"
+
+if [[ ! -d "/Applications/Hammerspoon.app" ]]; then
+  echo "yappr setup: Hammerspoon not installed — skipping hotkey config"
+  echo "  Install it first: brew install --cask hammerspoon"
+  echo "  Then re-run: yappr setup"
+elif [[ ! -f "$TMPL" ]]; then
+  echo "yappr setup: Hammerspoon template missing at $TMPL" >&2
+  exit 1
+elif [[ -f "$HS_FILE" ]] && ! grep -q "@yappr-installed@" "$HS_FILE" 2>/dev/null; then
+  echo "yappr setup: $HS_FILE exists and is not yappr-managed — skipping"
+  echo "  To install manually, see docs/installation.md (Hammerspoon section)"
+else
+  mkdir -p "$HOME/.hammerspoon"
+  YAPPR_TRACE_DEFAULT="/tmp/yappr-$(id -u)/trace.log"
+  sed \
+    -e "s|@YAPPR_BIN@|$HERE/yappr|g" \
+    -e "s|@YAPPR_TRACE_LOG@|$YAPPR_TRACE_DEFAULT|g" \
+    "$TMPL" > "$HS_FILE"
+  echo "yappr setup: wrote $HS_FILE"
+  echo "  Reload Hammerspoon: menu bar icon → Reload Config"
 fi
 
 echo "yappr setup: done — run 'yappr doctor' to verify"
