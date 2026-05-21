@@ -62,6 +62,7 @@ Steps:
   7. Build yappr-stt-daemon (Swift)
   8. Ad-hoc codesign so TCC permission survives rebuilds
   9. Add yappr/bin/ to your shell PATH
+  9b. Install shell completions (bash/zsh/fish)
 
 After install, you'll be told how to start the daemon and grant permissions.
 EOF
@@ -412,6 +413,40 @@ else
     warn "Skipped. Run yappr commands with the full path: $YAPPR_BIN/yappr"
   fi
 fi
+
+# -----------------------------------------------------------------------------
+# 9b. Shell completions
+# -----------------------------------------------------------------------------
+
+step "Shell completions"
+
+case "$SHELL_NAME" in
+  bash)
+    COMPLETION_DIR="$HOME/.bash_completion.d"
+    mkdir -p "$COMPLETION_DIR"
+    cp "$YAPPR_ROOT/completions/yappr.bash" "$COMPLETION_DIR/yappr"
+    ok "bash completion → $COMPLETION_DIR/yappr"
+    info "Ensure this is in ~/.bashrc (add if missing):"
+    info "    for f in ~/.bash_completion.d/*; do source \"\$f\"; done"
+    ;;
+  zsh)
+    ZSH_COMPLETION_DIR="$HOME/.zfunctions"
+    mkdir -p "$ZSH_COMPLETION_DIR"
+    cp "$YAPPR_ROOT/completions/yappr.zsh" "$ZSH_COMPLETION_DIR/_yappr"
+    ok "zsh completion → $ZSH_COMPLETION_DIR/_yappr"
+    info "Ensure ~/.zfunctions is in your fpath (add to ~/.zshrc if missing):"
+    info "    fpath=(~/.zfunctions \$fpath) && autoload -Uz compinit && compinit"
+    ;;
+  fish)
+    FISH_COMPLETION_DIR="$HOME/.config/fish/completions"
+    mkdir -p "$FISH_COMPLETION_DIR"
+    cp "$YAPPR_ROOT/completions/_yappr.fish" "$FISH_COMPLETION_DIR/yappr.fish"
+    ok "fish completion → $FISH_COMPLETION_DIR/yappr.fish"
+    ;;
+  *)
+    warn "Unknown shell ($SHELL_NAME). Install completions manually from $YAPPR_ROOT/completions/"
+    ;;
+esac
 
 # -----------------------------------------------------------------------------
 # 10. Daemon auto-start at login (launchd)
