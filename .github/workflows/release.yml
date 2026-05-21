@@ -8,13 +8,22 @@ on:
 jobs:
   release:
     runs-on: macos-15
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Read version
-        run: echo "VERSION=$(cat VERSION)" >> $GITHUB_ENV
+      - name: Read and verify version
+        run: |
+          VERSION="$(cat VERSION)"
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "VERSION file ($VERSION) does not match tag (${GITHUB_REF_NAME})" >&2
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Swift build
         run: |
