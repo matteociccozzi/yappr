@@ -34,7 +34,6 @@ local function start()
   end
 
   local finalCallback = function(exitCode, _stdOut, stdErr)
-    hs.alert.closeAll()
     if exitCode ~= 0 then
       local msg = (stdErr and #stdErr > 0) and stdErr:sub(-200) or ("rc=" .. tostring(exitCode))
       print("[yappr] failed: " .. msg)
@@ -58,6 +57,7 @@ end
 
 local function stop()
   trace("hs_release")
+  hs.alert.closeAll()
   if task then
     task:terminate()
     task = nil
