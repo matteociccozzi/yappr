@@ -1,0 +1,40 @@
+name: Tests
+
+on:
+  push:
+    branches: ["main", "feat/**"]
+  pull_request:
+    branches: ["main", "feat/**"]
+
+jobs:
+  bats:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install bats-core
+        run: brew install bats-core
+
+      - name: Run BATS tests
+        run: bats tests/bats/
+
+  pytest:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest and ruff
+        run: pip install pytest ruff
+
+      - name: Ruff check tests/python/
+        run: ruff check tests/python/
+
+      - name: Run pytest
+        run: pytest tests/python/ -v

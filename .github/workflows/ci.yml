@@ -50,7 +50,7 @@ jobs:
       - name: Ruff (Python lint)
         run: |
           ruff check bin/_yappr_paths.py bin/yappr-stats bin/yappr-doctor \
-            bin/yappr-mlx-server.py
+            bin/yappr-mlx-server.py tests/python/
 
       - name: No runtime writes in source tree
         run: bash scripts/check-no-runtime-writes.sh
