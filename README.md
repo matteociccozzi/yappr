@@ -16,6 +16,35 @@
 
 ---
 
+## Install
+
+### Homebrew (recommended)
+
+```bash
+brew install matteociccozzi/yappr/yappr
+```
+
+### From source
+
+```bash
+git clone --recurse-submodules https://github.com/matteociccozzi/yappr.git
+cd yappr
+./scripts/install.sh
+```
+
+### Direct download
+
+Download the latest tarball and `.sha256` from [Releases](https://github.com/matteociccozzi/yappr/releases), verify the checksum, then run the installer:
+
+```bash
+shasum -a 256 -c yappr-VERSION-macos-arm64.tar.gz.sha256
+tar xzf yappr-VERSION-macos-arm64.tar.gz
+cd yappr-VERSION-macos-arm64
+./scripts/install.sh
+```
+
+---
+
 ## ✨ How it works (60 seconds)
 
 You hold **Ctrl+Option+Y**, talk, and release. Under the hood:
@@ -74,16 +103,7 @@ This is the part that makes yappr feel like *dictation*, not just transcription.
 
 ---
 
-## Quick Install
-
-```bash
-git clone --recurse-submodules https://github.com/matteociccozzi/yappr.git
-cd yappr
-./scripts/install.sh
-```
-
-> If you already cloned without `--recurse-submodules`, run:
-> `git submodule update --init --recursive`
+## Post-install verification
 
 > **Three permissions you must grant manually** (macOS will not prompt until first use):
 >

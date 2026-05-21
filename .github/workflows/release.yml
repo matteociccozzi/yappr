@@ -8,13 +8,22 @@ on:
 jobs:
   release:
     runs-on: macos-15
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Read version
-        run: echo "VERSION=$(cat VERSION)" >> $GITHUB_ENV
+      - name: Read and verify version
+        run: |
+          VERSION="$(cat VERSION)"
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "VERSION file ($VERSION) does not match tag (${GITHUB_REF_NAME})" >&2
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Swift build
         run: |
@@ -33,15 +42,44 @@ jobs:
       - name: Bundle tarball
         run: |
           DIST="yappr-${{ env.VERSION }}-macos-arm64"
-          mkdir -p "$DIST/bin"
-          cp -r bin scripts configs prompts completions docs README.md LICENSE VERSION "$DIST/" 2>/dev/null || true
+          mkdir -p "$DIST/bin" "$DIST/share/man/man1"
+          # Source scripts (explicit list avoids __pycache__ and other noise)
+          cp bin/_yappr-paths.sh bin/_yappr_paths.py \
+             bin/yappr bin/yappr-config bin/yappr-daemon bin/yappr-dictate \
+             bin/yappr-doctor bin/yappr-help bin/yappr-llm-call \
+             bin/yappr-mlx-server bin/yappr-mlx-server.py \
+             bin/yappr-server bin/yappr-stats bin/yappr-trace \
+             "$DIST/bin/"
+          # Pre-built Swift binaries (already codesigned above)
           cp "$RUNNER_TEMP/build/yappr-stt-daemon/release/YapprSttDaemon" "$DIST/bin/"
           cp "$RUNNER_TEMP/build/yappr-stt-daemon/release/YapprSttConnect" "$DIST/bin/"
+          # Supporting directories
+          cp -r configs prompts completions scripts docs "$DIST/"
+          # Root files (CHANGELOG.md optional — present after Tier 3)
+          cp README.md LICENSE VERSION "$DIST/"
+          cp CHANGELOG.md "$DIST/" 2>/dev/null || true
+          # Man page (present after Tier 4)
+          cp docs/man/yappr.1 "$DIST/share/man/man1/" 2>/dev/null || true
+          # Archive + checksum
           tar czf "$DIST.tar.gz" "$DIST"
+          shasum -a 256 "$DIST.tar.gz" > "$DIST.tar.gz.sha256"
           echo "TARBALL=$DIST.tar.gz" >> $GITHUB_ENV
+          echo "CHECKSUM=$DIST.tar.gz.sha256" >> $GITHUB_ENV
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.TARBALL }}
+          files: |
+            ${{ env.TARBALL }}
+            ${{ env.CHECKSUM }}
           generate_release_notes: true
+
+      - name: Bump Homebrew formula
+        uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: yappr
+          tap-repository: matteociccozzi/homebrew-yappr
+          download-url: >-
+            https://github.com/matteociccozzi/yappr/releases/download/${{ github.ref_name }}/yappr-${{ env.VERSION }}-macos-arm64.tar.gz
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
