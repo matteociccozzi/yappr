@@ -62,3 +62,29 @@ load "test_helper"
   run "$YAPPR_BIN" notacommand
   [[ "$output" == *"yappr help"* ]]
 }
+
+@test "yappr --help output contains EXAMPLES section" {
+  run "$YAPPR_BIN" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"EXAMPLES"* ]]
+}
+
+@test "yappr --help output contains ENV VAR OVERRIDES section" {
+  run "$YAPPR_BIN" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ENV VAR OVERRIDES"* ]]
+}
+
+@test "yappr -h output contains SUBCOMMANDS section" {
+  run "$YAPPR_BIN" -h
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"SUBCOMMANDS"* ]]
+}
+
+@test "yappr -h output is shorter than yappr --help output" {
+  run "$YAPPR_BIN" -h
+  short="${output}"
+  run "$YAPPR_BIN" --help
+  full="${output}"
+  [ "${#short}" -lt "${#full}" ]
+}
