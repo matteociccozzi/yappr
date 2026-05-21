@@ -103,16 +103,7 @@ This is the part that makes yappr feel like *dictation*, not just transcription.
 
 ---
 
-## Quick Install
-
-```bash
-git clone --recurse-submodules https://github.com/matteociccozzi/yappr.git
-cd yappr
-./scripts/install.sh
-```
-
-> If you already cloned without `--recurse-submodules`, run:
-> `git submodule update --init --recursive`
+## Post-install verification
 
 > **Three permissions you must grant manually** (macOS will not prompt until first use):
 >
