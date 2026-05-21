@@ -1,48 +1,106 @@
 #!/usr/bin/env bash
-# yappr-help — print subcommand listing.
+# yappr-help — print help text.
+# --short  compact one-screen summary (for -h)
+# --full   full help with examples and env vars (for --help and 'help')
 set -euo pipefail
 # shellcheck source=bin/_yappr-paths.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_yappr-paths.sh"
 VERSION="$(cat "$YAPPR_ROOT/VERSION" 2>/dev/null || echo "unknown")"
 
-cat <<EOF
+MODE="${1:---full}"
+
+short_help() {
+  cat <<EOF
+yappr $VERSION — push-to-talk voice dictation for macOS Apple Silicon
+
+USAGE
+  yappr [subcommand] [options]
+
+SUBCOMMANDS
+  dictate            Record speech and type cleaned text at cursor (default)
+  daemon <op>        Manage STT daemon   (start|stop|restart|status|logs|tail)
+  server <op>        Manage MLX server   (start|stop|restart|status|logs|tail)
+  config <op>        Manage configs      (list|active|use|show|diff|delete|path)
+  stats              Show dictation metrics
+  trace              Show timing trace from last session
+  doctor             Post-install health check (11 checks)
+  version            Print version string
+  help / --help      Full help with examples and env vars
+  -h                 This short summary
+EOF
+}
+
+full_help() {
+  cat <<EOF
 yappr $VERSION — push-to-talk voice dictation for macOS Apple Silicon
 
 USAGE
   yappr [subcommand] [options]
 
 DAILY USE
-  yappr dictate    Record and type cleaned text at cursor (default — called by Hammerspoon)
+  yappr dictate    Record and type cleaned text at cursor (default; Hammerspoon calls this)
   yappr stats      Show dictation metrics (words, latency, daily usage)
   yappr trace      Show timing trace from last session
 
 DAEMON & SERVER
-  yappr daemon <start|stop|restart|status|logs|tail>
+  yappr daemon start|stop|restart|status|logs|tail
                    Manage the Nemotron STT daemon (YapprSttDaemon)
-  yappr server <start|stop|restart|status|logs|tail>
-                   Manage the MLX inference server (Qwen3)
+  yappr server start|stop|restart|status|logs|tail
+                   Manage the MLX inference server (Qwen3-1.7B-4bit)
 
 CONFIGURATION
-  yappr config list          List available configs
-  yappr config use <name>    Switch active config
-  yappr config show          Print active config
+  yappr config list           List available configs in ~/.config/yappr/configs/
+  yappr config active         Print the active config name
+  yappr config use <name>     Switch active config (atomic symlink swap)
+  yappr config show [<name>]  Pretty-print a config JSON (defaults to active)
+  yappr config diff <a> <b>   Show normalized diff between two configs
+  yappr config delete <name>  Delete a config (refuses the active one)
+  yappr config path           Print the configs directory path
 
 OTHER
-  yappr doctor     Post-install health check
-  yappr help       Show this message
-  yappr version    Show version
+  yappr doctor     Post-install health check (11 checks; exits 1 if any FAIL)
+  yappr help       Show this full help
+  yappr -h         Compact subcommand summary (one screen)
+  yappr version    Print version string
+
+EXAMPLES
+  # Start everything and verify health
+  yappr daemon start && yappr server start && yappr doctor
+
+  # Switch to a different LLM config and confirm it loaded
+  yappr config list
+  yappr config use fast
+  yappr config show
+
+  # Show last dictation timing breakdown
+  yappr trace
+
+  # Review daily usage stats
+  yappr stats
 
 ENV VAR OVERRIDES
-  YAPPR_ROOT           Repo/source root (auto-detected)
-  YAPPR_CONFIG         Path to active config JSON
-  YAPPR_CONFIG_HOME    Config dir (default: ~/.config/yappr)
-  YAPPR_STATE_HOME     State dir for logs/metrics (default: ~/.local/state/yappr)
-  YAPPR_RUNTIME_DIR    Runtime dir for socket/PID (default: /tmp/yappr-\$(id -u))
-  YAPPR_SOCKET         Socket path (default: \$YAPPR_RUNTIME_DIR/stt.sock)
-  YAPPR_TRACE_LOG      Trace log path (default: \$YAPPR_RUNTIME_DIR/trace.log)
+  YAPPR_ROOT           Repo/source root (auto-detected from bin/ location)
+  YAPPR_CONFIG         Path to active config JSON (overrides config symlink)
+  YAPPR_CONFIG_HOME    Config dir          default: ~/.config/yappr
+  YAPPR_STATE_HOME     State dir (logs)    default: ~/.local/state/yappr
+  YAPPR_DATA_HOME      Data dir (build)    default: ~/.local/share/yappr
+  YAPPR_RUNTIME_DIR    Runtime dir         default: /tmp/yappr-\$(id -u)
+  YAPPR_SOCKET         STT socket path     default: \$YAPPR_RUNTIME_DIR/stt.sock
+  YAPPR_TRACE_LOG      Trace log path      default: \$YAPPR_RUNTIME_DIR/trace.log
+  YAPPR_QUIET          Set to 1 to suppress stderr (Hammerspoon automation mode)
+  YAPPR_COPY           Set to 1 to also copy cleaned text to macOS clipboard
 
 DOCS
-  $YAPPR_ROOT/docs/installation.md
-  $YAPPR_ROOT/docs/cli-reference.md
-  $YAPPR_ROOT/CONTRIBUTING.md
+  Installation:  \$YAPPR_ROOT/docs/installation.md
+  CLI reference: \$YAPPR_ROOT/docs/cli-reference.md
+  Architecture:  \$YAPPR_ROOT/docs/architecture.md
+  Configuration: \$YAPPR_ROOT/docs/configuration.md
+  Contributing:  \$YAPPR_ROOT/CONTRIBUTING.md
 EOF
+}
+
+case "$MODE" in
+  --short) short_help ;;
+  --full)  full_help ;;
+  *)       full_help ;;
+esac
