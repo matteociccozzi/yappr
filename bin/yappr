@@ -16,7 +16,8 @@ case "$CMD" in
   trace)       exec "$HERE/yappr-trace"    "$@" ;;
   doctor)      exec "$HERE/yappr-doctor"   "$@" ;;
   server)      exec "$HERE/yappr-server"   "$@" ;;
-  help|-h|--help) exec "$HERE/yappr-help" ;;
+  help|--help)    exec "$HERE/yappr-help" --full ;;
+  -h)             exec "$HERE/yappr-help" --short ;;
   version|--version|-V)
     echo "yappr $(cat "$YAPPR_ROOT/VERSION" 2>/dev/null || echo "unknown")"
     exit 0
