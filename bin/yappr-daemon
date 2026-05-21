@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# yappr-daemon — manage the YapprSttDaemon lifecycle.
+# Usage: yappr daemon <start|stop|restart|status|logs|tail>
+set -euo pipefail
+# shellcheck source=bin/_yappr-paths.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_yappr-paths.sh"
+yappr_ensure_dirs
+
+DAEMON_BIN="$(yappr_daemon_binary)"
+CMD="${1:-status}"
+
+_pid_running() {
+  local pid
+  pid="$(cat "$YAPPR_DAEMON_PID" 2>/dev/null)" || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+_start() {
+  if _pid_running; then
+    echo "yappr daemon: already running (pid=$(cat "$YAPPR_DAEMON_PID"))"
+    return 0
+  fi
+  [[ -x "$DAEMON_BIN" ]] || { echo "yappr daemon: binary not found at $DAEMON_BIN" >&2; exit 1; }
+  mkdir -p "$(dirname "$YAPPR_DAEMON_LOG")"
+  nohup "$DAEMON_BIN" >> "$YAPPR_DAEMON_LOG" 2>&1 &
+  local bg_pid=$!
+  echo "$bg_pid" > "$YAPPR_DAEMON_PID"
+  local i
+  for i in $(seq 1 10); do
+    sleep 0.5
+    if [[ -S "$YAPPR_SOCKET" ]]; then
+      echo "yappr daemon: started (pid=$bg_pid)"
+      return 0
+    fi
+  done
+  echo "yappr daemon: started but socket not yet ready — check: yappr daemon logs" >&2
+}
+
+_stop() {
+  if ! _pid_running; then
+    echo "yappr daemon: not running"
+    rm -f "$YAPPR_DAEMON_PID" "$YAPPR_SOCKET"
+    return 0
+  fi
+  local pid
+  pid="$(cat "$YAPPR_DAEMON_PID")"
+  kill -TERM "$pid" 2>/dev/null || true
+  local i
+  # shellcheck disable=SC2034
+  for i in $(seq 1 4); do
+    sleep 0.5
+    if ! kill -0 "$pid" 2>/dev/null; then
+      rm -f "$YAPPR_DAEMON_PID" "$YAPPR_SOCKET"
+      echo "yappr daemon: stopped"
+      return 0
+    fi
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+  rm -f "$YAPPR_DAEMON_PID" "$YAPPR_SOCKET"
+  echo "yappr daemon: force-killed"
+}
+
+case "$CMD" in
+  start)   _start ;;
+  stop)    _stop ;;
+  restart) _stop; sleep 0.5; _start ;;
+  status)
+    if _pid_running; then
+      local_pid="$(cat "$YAPPR_DAEMON_PID")"
+      sock_ok="no"
+      [[ -S "$YAPPR_SOCKET" ]] && sock_ok="yes"
+      echo "yappr daemon: running (pid=$local_pid, socket=$sock_ok)"
+    else
+      echo "yappr daemon: not running"
+    fi
+    ;;
+  logs)  cat "$YAPPR_DAEMON_LOG" 2>/dev/null || echo "(no log yet at $YAPPR_DAEMON_LOG)" ;;
+  tail)  tail -F "$YAPPR_DAEMON_LOG" 2>/dev/null ;;
+  *)
+    echo "Usage: yappr daemon <start|stop|restart|status|logs|tail>" >&2
+    exit 2
+    ;;
+esac

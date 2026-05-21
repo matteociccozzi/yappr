@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# yappr — subcommand dispatcher. Usage: yappr <subcommand> [args...]
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/_yappr-paths.sh
+source "$HERE/_yappr-paths.sh"
+
+CMD="${1:-dictate}"
+shift 2>/dev/null || true
+
+case "$CMD" in
+  dictate|"")  exec "$HERE/yappr-dictate"  "$@" ;;
+  daemon)      exec "$HERE/yappr-daemon"   "$@" ;;
+  config)      exec "$HERE/yappr-config"   "$@" ;;
+  stats)       exec "$HERE/yappr-stats"    "$@" ;;
+  trace)       exec "$HERE/yappr-trace"    "$@" ;;
+  doctor)      exec "$HERE/yappr-doctor"   "$@" ;;
+  server)      exec "$HERE/yappr-server"   "$@" ;;
+  help|-h|--help) exec "$HERE/yappr-help" ;;
+  version|--version|-V)
+    echo "yappr $(cat "$YAPPR_ROOT/VERSION" 2>/dev/null || echo "unknown")"
+    exit 0
+    ;;
+  *)
+    echo "yappr: unknown subcommand '$CMD'" >&2
+    echo "Run 'yappr help' for available subcommands." >&2
+    exit 2
+    ;;
+esac

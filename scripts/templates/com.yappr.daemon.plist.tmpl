@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.yappr.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>@DAEMON_BIN@</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>YAPPR_ROOT</key>         <string>@YAPPR_ROOT@</string>
+        <key>YAPPR_STATE_HOME</key>   <string>@YAPPR_STATE_HOME@</string>
+        <key>YAPPR_RUNTIME_DIR</key>  <string>@YAPPR_RUNTIME_DIR@</string>
+        <key>YAPPR_SOCKET</key>       <string>@YAPPR_SOCKET@</string>
+        <key>YAPPR_DAEMON_PID</key>   <string>@YAPPR_DAEMON_PID@</string>
+        <key>YAPPR_DAEMON_LOG</key>   <string>@YAPPR_DAEMON_LOG@</string>
+        <key>YAPPR_TRACE_LOG</key>    <string>@YAPPR_TRACE_LOG@</string>
+    </dict>
+
+    <key>RunAtLoad</key>    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>Crashed</key> <true/>
+    </dict>
+
+    <key>StandardErrorPath</key>
+    <string>@YAPPR_DAEMON_LOG@</string>
+
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>WorkingDirectory</key>
+    <string>@YAPPR_ROOT@</string>
+</dict>
+</plist>

@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# yappr-probe-caching — diagnose whether the active config's LLM server
+# does prefix caching for our system prompt.
+#
+# Sends N identical-system-prompt requests with varying short user messages
+# and prints TTFT for each. If prefix caching is working, TTFT drops sharply
+# after the first call.
+#
+# Usage:  yappr-probe-caching [N]        (default N=10)
+
+set -uo pipefail
+
+YAPPR_ROOT="${YAPPR_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+YAPPR_CONFIG="${YAPPR_CONFIG:-$YAPPR_ROOT/configs/active.json}"
+N="${1:-10}"
+
+[[ -f "$YAPPR_CONFIG" ]] || { echo "no config at $YAPPR_CONFIG" >&2; exit 1; }
+
+LLM_URL=$(jq -r '.llm.url' "$YAPPR_CONFIG")
+TEMPERATURE=$(jq -r '.llm.temperature // 0' "$YAPPR_CONFIG")
+EXTRA_PARAMS=$(jq -c '.llm.extra_params // {}' "$YAPPR_CONFIG")
+CONFIG_VERSION=$(jq -r '.version' "$YAPPR_CONFIG")
+MODEL_NAME=$(jq -r '.llm.model_name // ""' "$YAPPR_CONFIG")
+PROMPT_FILE="$YAPPR_ROOT/$(jq -r '.prompt_file' "$YAPPR_CONFIG")"
+SYSTEM_PROMPT=$(cat "$PROMPT_FILE")
+PROMPT_LEN=$(wc -c < "$PROMPT_FILE" | tr -d ' ')
+
+echo "─────────────────────────────────────────────────────────"
+echo "yappr-probe-caching"
+echo "  config:        $CONFIG_VERSION"
+echo "  model:         $MODEL_NAME"
+echo "  url:           $LLM_URL"
+echo "  system prompt: $PROMPT_LEN chars"
+echo "  calls:         $N (after 1 warmup)"
+echo "─────────────────────────────────────────────────────────"
+
+call_once() {
+  local user_msg="$1"
+  local body
+  body=$(jq -n \
+    --arg sys "$SYSTEM_PROMPT" \
+    --arg user "$user_msg" \
+    --argjson temperature "$TEMPERATURE" \
+    --argjson extras "$EXTRA_PARAMS" \
+    '{messages:[{role:"system",content:$sys},{role:"user",content:$user}],
+      max_tokens: 16,
+      temperature: $temperature} + $extras')
+  jq -n --arg url "$LLM_URL" --argjson body "$body" '{url:$url, body:$body, timeout:30}' \
+    | "$YAPPR_ROOT/bin/yappr-llm-call"
+}
+
+# Warmup call (excluded from stats) — establishes Metal kernels / cold caches
+echo "Warming up (first request — pays cold-start cost) ..."
+WARMUP=$(call_once "Hello")
+WARMUP_TTFT=$(echo "$WARMUP" | jq -r '.ttft_ms')
+WARMUP_TOTAL=$(echo "$WARMUP" | jq -r '.total_ms')
+echo "  warmup:  ttft=${WARMUP_TTFT}ms  total=${WARMUP_TOTAL}ms"
+echo
+
+printf "  %-5s  %-10s  %-10s  %-10s\n" "call" "ttft_ms" "total_ms" "gen_ms"
+echo "  ─────  ──────────  ──────────  ──────────"
+
+ttfts=()
+for i in $(seq 1 "$N"); do
+  USER_MSG="Probe ${i}: please reply with exactly: ok"
+  RESULT=$(call_once "$USER_MSG")
+  ERR=$(echo "$RESULT" | jq -r '.error // empty')
+  if [[ -n "$ERR" ]]; then
+    echo "  call $i FAILED: $ERR"
+    continue
+  fi
+  TTFT=$(echo "$RESULT" | jq -r '.ttft_ms')
+  TOTAL=$(echo "$RESULT" | jq -r '.total_ms')
+  GEN=$((TOTAL - TTFT))
+  printf "  %-5d  %-10d  %-10d  %-10d\n" "$i" "$TTFT" "$TOTAL" "$GEN"
+  ttfts+=("$TTFT")
+done
+
+echo
+
+if [[ ${#ttfts[@]} -lt 2 ]]; then
+  echo "Not enough successful calls to analyze." >&2
+  exit 1
+fi
+
+# Summary
+first_ttft="${ttfts[0]}"
+rest=("${ttfts[@]:1}")
+sum=0
+min=999999
+max=0
+for t in "${rest[@]}"; do
+  sum=$((sum + t))
+  (( t < min )) && min=$t
+  (( t > max )) && max=$t
+done
+avg=$((sum / ${#rest[@]}))
+
+echo "─────────────────────────────────────────────────────────"
+echo "Summary:"
+echo "  call 1 TTFT (cold):           ${first_ttft}ms"
+echo "  calls 2-${N} TTFT (potentially warm):"
+echo "    min:                        ${min}ms"
+echo "    mean:                       ${avg}ms"
+echo "    max:                        ${max}ms"
+echo
+if (( avg * 2 < first_ttft )); then
+  ratio=$(( first_ttft / (avg > 0 ? avg : 1) ))
+  echo "  ✓ PREFIX CACHING LIKELY WORKING."
+  echo "    Warm calls are ~${ratio}× faster than cold call."
+  echo "    The server is reusing the system prompt KV cache."
+elif (( avg < (first_ttft * 9 / 10) )); then
+  echo "  ~ Modest TTFT drop (~$((100 - (avg * 100 / first_ttft)))%)."
+  echo "    Some caching benefit, but not the dramatic drop expected from"
+  echo "    full prefix-cache hits. Could be partial caching or noise."
+else
+  echo "  ✗ NO CLEAR PREFIX CACHING."
+  echo "    Warm calls are not meaningfully faster than the cold call."
+  echo "    The server is re-prefilling the system prompt every request."
+  echo "    Opportunity to build a custom server with explicit prefix caching."
+fi
+echo "─────────────────────────────────────────────────────────"

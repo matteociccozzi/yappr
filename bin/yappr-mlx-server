@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# yappr-mlx-server — portable launcher for the MLX inference server.
+# Resolves the uv-managed mlx-lm Python interpreter at runtime so this
+# script works on any machine regardless of home directory path.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY=""
+if command -v uv >/dev/null 2>&1; then
+  PY="$(uv tool run --from mlx-lm python3 -c "import sys; print(sys.executable)" 2>/dev/null || true)"
+fi
+exec "${PY:-python3}" "$HERE/yappr-mlx-server.py" "$@"

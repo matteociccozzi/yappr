@@ -1,0 +1,14 @@
+# Swift package manager metadata (build artifacts now go outside the source tree)
+swift/yappr-stt-daemon/.swiftpm/
+swift/yappr-stt-daemon/Package.resolved
+# Safety net: .build/ should never live in the source tree (--scratch-path moves it out)
+swift/yappr-stt-daemon/.build/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Temp / scratch
+*.tmp
+*.bak
+.DS_Store

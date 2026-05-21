@@ -1,0 +1,410 @@
+#!/usr/bin/env python3
+"""yappr-stats — summarize, histogram, trend, and compare yappr metrics.
+
+Reads JSONL files from <YAPPR_ROOT>/metrics/*.jsonl.
+YAPPR_ROOT is auto-detected from the script location; override with the
+YAPPR_ROOT env var. Override the metrics dir directly with YAPPR_METRICS_DIR.
+"""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import re
+import statistics
+import sys
+from datetime import datetime, timedelta, timezone
+import sys as _sys
+from pathlib import Path
+
+_sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _yappr_paths as paths
+
+YAPPR_ROOT = paths.root()
+METRICS_DIR = Path(os.environ.get("YAPPR_METRICS_DIR") or paths.metrics_dir())
+
+# ANSI colors — only when stdout is a TTY and NO_COLOR isn't set
+_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+def _c(code: str) -> str:
+    return code if _COLOR else ""
+RESET   = _c("\033[0m")
+BOLD    = _c("\033[1m")
+DIM     = _c("\033[2m")
+RED     = _c("\033[31m")
+GREEN   = _c("\033[32m")
+YELLOW  = _c("\033[33m")
+BLUE    = _c("\033[34m")
+MAGENTA = _c("\033[35m")
+CYAN    = _c("\033[36m")
+# Palette for cycling colors across metric rows (rainbow-ish)
+METRIC_PALETTE = [CYAN, BLUE, MAGENTA, YELLOW, GREEN] if _COLOR else [""] * 5
+
+# Metric keys present in stored JSONL records (others are derived)
+STORED_METRICS = [
+    "stt_ms",
+    "llm_ttft_ms",
+    "llm_total_ms",
+    "prompt_tokens",
+    "completion_tokens",
+    "audio_seconds",
+    "stt_total_held_ms",
+    "raw_chars",
+    "cleaned_chars",
+]
+
+# All metrics including derived ones — usable with --hist and --trend
+ALL_METRICS = STORED_METRICS + ["tokens_per_sec", "stt_rtf"]
+
+
+# ---------- loading ----------------------------------------------------------
+
+def load_records() -> list[dict]:
+    """Load all JSONL records, oldest first."""
+    files = sorted(glob.glob(str(METRICS_DIR / "*.jsonl")))
+    records: list[dict] = []
+    for f in files:
+        with open(f) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass  # skip malformed
+    records.sort(key=lambda r: r.get("ts", ""))
+    return records
+
+
+def parse_since(s: str) -> str:
+    """Return an ISO timestamp matching `s`. Accepts ISO strings or simple phrases."""
+    s = s.strip()
+    # Try ISO directly
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        pass
+    now = datetime.now(timezone.utc)
+    if s == "today":
+        return now.replace(hour=0, minute=0, second=0, microsecond=0).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+    if s == "yesterday":
+        return (now - timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    m = re.match(r"^(\d+)\s+(minute|hour|day)s?\s+ago$", s)
+    if m:
+        n = int(m.group(1))
+        unit = m.group(2)
+        delta = {"minute": timedelta(minutes=n), "hour": timedelta(hours=n),
+                 "day": timedelta(days=n)}[unit]
+        return (now - delta).strftime("%Y-%m-%dT%H:%M:%SZ")
+    raise ValueError(
+        f"unrecognized --since value: {s!r}. "
+        "Use ISO timestamp, 'today', 'yesterday', or 'N {minutes|hours|days} ago'."
+    )
+
+
+# ---------- derived metrics --------------------------------------------------
+
+def enrich(records: list[dict]) -> list[dict]:
+    """Add derived per-record metrics: tokens_per_sec, stt_rtf."""
+    for r in records:
+        gen_ms = (r.get("llm_total_ms") or 0) - (r.get("llm_ttft_ms") or 0)
+        ctoks = r.get("completion_tokens") or 0
+        if gen_ms > 0 and ctoks > 0:
+            r["tokens_per_sec"] = ctoks / (gen_ms / 1000.0)
+        else:
+            r["tokens_per_sec"] = None
+
+        stt_ms = r.get("stt_ms") or 0
+        audio_s = r.get("audio_seconds") or 0
+        if stt_ms > 0 and audio_s > 0:
+            r["stt_rtf"] = (stt_ms / 1000.0) / audio_s
+        else:
+            r["stt_rtf"] = None
+    return records
+
+
+# ---------- formatting -------------------------------------------------------
+
+def stats_line(vals: list[float], fmt: str) -> str:
+    """Format mean/p50/p95/max from a list of numeric values."""
+    if not vals:
+        return f"{DIM}(no data){RESET}"
+    vals = sorted(vals)
+    n = len(vals)
+    p50 = vals[n // 2]
+    p95 = vals[min(int(n * 0.95), n - 1)]
+    return (f"{DIM}mean{RESET} {BOLD}{fmt % statistics.mean(vals):<7s}{RESET} "
+            f"{DIM}p50{RESET} {fmt % p50:<7s} "
+            f"{DIM}p95{RESET} {fmt % p95:<7s} "
+            f"{DIM}max{RESET} {fmt % max(vals)}")
+
+
+def _fmt_for(key: str) -> str:
+    if key in ("tokens_per_sec", "stt_rtf", "audio_seconds"):
+        return "%.2f"
+    return "%.0f"
+
+
+def print_summary(records: list[dict], title: str = "") -> None:
+    if not records:
+        print(f"{DIM}(no records){RESET}")
+        return
+    last_ts = records[-1].get("ts", "?")
+    header_text = f"{len(records)} runs (last: {last_ts})"
+    if title:
+        header_text = f"[{title}] {header_text}"
+    print(f"\n{BOLD}{CYAN}📊 {header_text}{RESET}")
+
+    # Config summary line — show when records share a single config_version
+    versions = {r.get("config_version") for r in records if r.get("config_version")}
+    if len(versions) == 1:
+        v = next(iter(versions))
+        models = {r.get("model_name") for r in records if r.get("model_name")}
+        model_str = next(iter(models)) if len(models) == 1 else "(mixed)"
+        backends = {r.get("backend") for r in records if r.get("backend")}
+        backend_str = next(iter(backends)) if len(backends) == 1 else "(mixed)"
+        print(f"  {DIM}config:{RESET} {GREEN}{v}{RESET}  "
+              f"{DIM}model:{RESET} {BLUE}{model_str}{RESET}  "
+              f"{DIM}backend:{RESET} {MAGENTA}{backend_str}{RESET}")
+    elif versions:
+        print(f"  {DIM}config:{RESET} {YELLOW}(mixed: {', '.join(sorted(versions))}){RESET}")
+    print()
+
+    for i, key in enumerate(ALL_METRICS):
+        vals = [r[key] for r in records if r.get(key) is not None]
+        color = METRIC_PALETTE[i % len(METRIC_PALETTE)]
+        print(f"  {color}{key:<19s}{RESET} {stats_line(vals, _fmt_for(key))}")
+
+
+def print_histogram(vals: list[float], bins: int = 20, width: int = 50,
+                    fmt: str = "%.0f") -> None:
+    vals = [v for v in vals if v is not None]
+    if not vals:
+        print(f"{DIM}(no data){RESET}")
+        return
+    lo, hi = min(vals), max(vals)
+    if lo == hi:
+        print(f"  all values = {fmt % lo}  (n={len(vals)})")
+        return
+    edges = [lo + (hi - lo) * i / bins for i in range(bins + 1)]
+    counts = [0] * bins
+    for v in vals:
+        idx = min(int((v - lo) / (hi - lo) * bins), bins - 1)
+        counts[idx] += 1
+    maxc = max(counts)
+    palette = METRIC_PALETTE if _COLOR else [""] * 5
+    for i, c in enumerate(counts):
+        bar = "█" * int(c / maxc * width) if maxc else ""
+        color = palette[i % len(palette)]
+        label = f"{fmt % edges[i]:>9s}"
+        print(f"  {DIM}{label}{RESET} {DIM}|{RESET} {color}{bar}{RESET} {BOLD}{c}{RESET}")
+    print(f"  {DIM}(n={len(vals)}, min={fmt % lo}, max={fmt % hi}){RESET}")
+
+
+def print_trend(vals: list[float], width: int = 60, height: int = 10,
+                fmt: str = "%.0f") -> None:
+    vals = [v for v in vals if v is not None]
+    if len(vals) < 2:
+        print(f"{DIM}(not enough data for trend){RESET}")
+        return
+    vals = vals[-width:]
+    lo, hi = min(vals), max(vals)
+    if lo == hi:
+        print(f"  all values = {fmt % lo}  (n={len(vals)})")
+        return
+    palette = METRIC_PALETTE if _COLOR else [""] * 5
+    for row in range(height, -1, -1):
+        threshold = lo + (hi - lo) * (row / height)
+        # Color the row by height — top rows are warm/red, bottom rows are cool/green
+        # so high values "warn" and low values "look fine"
+        if _COLOR:
+            color = palette[(height - row) % len(palette)]
+        else:
+            color = ""
+        line = "".join(f"{color}█{RESET}" if v >= threshold else " " for v in vals)
+        print(f"  {DIM}{fmt % threshold:>9s} |{RESET} {line}")
+    print(f"            {DIM}+{'-' * len(vals)}{RESET}")
+    print(f"             {DIM}{len(vals)} most recent runs →{RESET}")
+
+
+# ---------- main -------------------------------------------------------------
+
+def main(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(
+        description="Summarize yappr metrics.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Available metrics: " + ", ".join(ALL_METRICS),
+    )
+    p.add_argument("-n", "--last", type=int, default=20,
+                   help="last N runs (default: 20)")
+    p.add_argument("--all", action="store_true", help="all runs (ignores -n)")
+    p.add_argument("--since", metavar="WHEN",
+                   help="only runs since WHEN (ISO ts, 'today', '2 hours ago', etc.)")
+    p.add_argument("--hist", metavar="METRIC",
+                   help="ASCII histogram for one metric")
+    p.add_argument("--trend", metavar="METRIC",
+                   help="ASCII trend chart for one metric")
+    p.add_argument("--compare", metavar="ISO_TS",
+                   help="split records into before/after ISO_TS and show side-by-side")
+    p.add_argument("--config", metavar="NAME",
+                   help="only records where config_version == NAME")
+    p.add_argument("--by-config", action="store_true",
+                   help="group records by config_version, print one summary per group")
+    p.add_argument("--compare-configs", nargs=2, metavar=("A", "B"),
+                   help="filter to two configs and show side-by-side summaries")
+    p.add_argument("--raw", action="store_true",
+                   help="dump matching records as JSONL on stdout")
+    p.add_argument("--clear", action="store_true",
+                   help="archive all metric files to metrics.bak.<ts>/ (effectively wipes stats)")
+    p.add_argument("-y", "--yes", action="store_true",
+                   help="skip the confirmation prompt for --clear")
+    p.add_argument(
+        "--metrics-dir",
+        default=None,
+        metavar="DIR",
+        help=f"Override metrics directory (default: {paths.metrics_dir()})"
+    )
+    args = p.parse_args(argv)
+
+    global METRICS_DIR
+    if args.metrics_dir:
+        METRICS_DIR = Path(args.metrics_dir)
+
+    if args.clear:
+        return cmd_clear(skip_prompt=args.yes)
+
+    if not METRICS_DIR.exists() or not list(METRICS_DIR.glob("*.jsonl")):
+        print(f"No metrics yet at {METRICS_DIR}. Run yappr first.")
+        return 0
+
+    records = load_records()
+
+    if args.since:
+        cutoff = parse_since(args.since)
+        records = [r for r in records if r.get("ts", "") >= cutoff]
+
+    if args.config:
+        records = [r for r in records if r.get("config_version") == args.config]
+
+    if args.compare_configs:
+        a, b = args.compare_configs
+        records = [r for r in records if r.get("config_version") in (a, b)]
+
+    # Don't slice when grouping/comparing — they need full record set
+    no_slice = args.all or args.compare or args.since or args.by_config or args.compare_configs
+    if not no_slice:
+        records = records[-args.last:]
+
+    records = enrich(records)
+
+    if not records:
+        print("No records match filters.")
+        return 0
+
+    if args.raw:
+        for r in records:
+            print(json.dumps(r))
+        return 0
+
+    if args.hist:
+        if args.hist not in ALL_METRICS:
+            print(f"Unknown metric: {args.hist}. See --help.", file=sys.stderr)
+            return 2
+        vals = [r[args.hist] for r in records if r.get(args.hist) is not None]
+        print(f"\nHistogram of {args.hist} ({len(vals)} samples):\n")
+        print_histogram(vals, fmt=_fmt_for(args.hist))
+        return 0
+
+    if args.trend:
+        if args.trend not in ALL_METRICS:
+            print(f"Unknown metric: {args.trend}. See --help.", file=sys.stderr)
+            return 2
+        vals = [r[args.trend] for r in records if r.get(args.trend) is not None]
+        print(f"\nTrend of {args.trend}:\n")
+        print_trend(vals, fmt=_fmt_for(args.trend))
+        return 0
+
+    if args.compare:
+        cutoff = args.compare
+        try:
+            cutoff = parse_since(cutoff)
+        except ValueError:
+            pass  # already ISO
+        before = [r for r in records if r.get("ts", "") < cutoff]
+        after = [r for r in records if r.get("ts", "") >= cutoff]
+        print(f"\nComparing runs before vs. on/after {cutoff}\n")
+        print_summary(before, title="BEFORE")
+        print_summary(after, title="AFTER")
+        return 0
+
+    if args.compare_configs:
+        a, b = args.compare_configs
+        a_records = [r for r in records if r.get("config_version") == a]
+        b_records = [r for r in records if r.get("config_version") == b]
+        print(f"\nComparing configs: {a}  vs  {b}\n")
+        print_summary(a_records, title=a)
+        print_summary(b_records, title=b)
+        return 0
+
+    if args.by_config:
+        # Group by config_version (None / missing -> '(legacy)')
+        groups: dict[str, list[dict]] = {}
+        for r in records:
+            key = r.get("config_version") or "(legacy)"
+            groups.setdefault(key, []).append(r)
+        if not groups:
+            print("No records.")
+            return 0
+        print(f"\nBy config ({len(groups)} group{'s' if len(groups) != 1 else ''}):\n")
+        for version, rs in sorted(groups.items(), key=lambda kv: kv[0]):
+            print_summary(rs, title=version)
+        return 0
+
+    # Default: summary
+    print_summary(records)
+    return 0
+
+
+def cmd_clear(skip_prompt: bool = False) -> int:
+    """Archive all metric files to metrics.bak.<ts>/, effectively clearing stats."""
+    import shutil
+    import time
+    if not METRICS_DIR.exists():
+        print(f"Nothing to clear — {METRICS_DIR} doesn't exist.")
+        return 0
+    files = sorted(METRICS_DIR.glob("*.jsonl"))
+    if not files:
+        print(f"Nothing to clear — no .jsonl files in {METRICS_DIR}.")
+        return 0
+    total_records = 0
+    for f in files:
+        with open(f) as fh:
+            total_records += sum(1 for line in fh if line.strip())
+
+    print(f"Found {len(files)} file(s), {total_records} record(s) total:")
+    for f in files:
+        print(f"  {f.name}")
+    if not skip_prompt:
+        ans = input(f"\nMove all to {METRICS_DIR}.bak.<timestamp>/ and start fresh? [y/N] ")
+        if ans.strip().lower() not in ("y", "yes"):
+            print("Aborted.")
+            return 1
+
+    backup = paths.state_home() / f"metrics.bak.{int(time.time())}"
+    backup.mkdir(parents=True, exist_ok=False)
+    for f in files:
+        shutil.move(str(f), str(backup / f.name))
+    print(f"✓ Archived to {backup}")
+    print(f"  {METRICS_DIR} is now empty. Next yappr run starts a fresh metric file.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
