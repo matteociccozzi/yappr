@@ -6,7 +6,7 @@ Three observability surfaces, in order of usefulness when something feels off:
 2. **`$YAPPR_STATE_HOME/logs/daemon.log`** — what the long-running Swift daemon is doing. Best for "why did it fail to start the mic".
 3. **`$YAPPR_STATE_HOME/logs/<timestamp>.log`** — one file per `yappr` invocation. Best for cleanup / LLM-side issues.
 
-Plus `$YAPPR_STATE_HOME/metrics/YYYY-MM.jsonl` for cross-run analysis (see `bin/yappr-stats`).
+Plus `$YAPPR_STATE_HOME/metrics/YYYY-MM.jsonl` for cross-run analysis (see `yappr stats`).
 
 ---
 
@@ -128,7 +128,7 @@ The Swift daemon writes to stderr; the launchd unit (or however you run it) typi
 - `raw_chars`, `cleaned_chars`
 - `config_version`, `config_hash`, `prompt_hash`, `backend`, `model_name`, `llm_url`
 
-The prompt and config hashes are there so you can A/B by filtering on them in `yappr-stats`.
+The prompt and config hashes are there so you can A/B by filtering on them in `yappr stats`.
 
 ---
 
@@ -182,12 +182,12 @@ This is expected when the user released the hotkey without speaking: `yappr` exi
 
 ### TTFT suspiciously high
 
-**Symptom:** `yappr-stats` shows `llm_ttft_ms` consistently >300 ms when you expect ~100 ms.
+**Symptom:** `yappr stats` shows `llm_ttft_ms` consistently >300 ms when you expect ~100 ms.
 
 **Diagnosis:** Confirm the active backend caches the system prompt across requests.
 
 ```bash
-yappr-config active                                       # which config?
+yappr config active                                       # which config?
 diagnostics/yappr-probe-caching 10                        # measure TTFT pattern
 curl -s http://127.0.0.1:8081/health | jq                 # warm_requests climbing?
 ```
@@ -195,14 +195,14 @@ curl -s http://127.0.0.1:8081/health | jq                 # warm_requests climbi
 If `warm_requests` increments on each dictation, caching is working; the latency floor is the model's. If you're pointed at stock `mlx_lm.server` (no cross-request caching), switch:
 
 ```bash
-yappr-config use default
+yappr config use default
 ```
 
 ### Prompt-hash rebuild on every request
 
 **Symptom:** Server stderr shows `[cache] system prompt changed (got X, had Y) — rebuilding` repeatedly.
 
-If it fires once after you edit `prompts/cleanup.txt`, that's expected and self-healing — one ~150 ms cold prefill, then warm again. If it fires every request, two configs are pointed at the same port with different prompts; check `yappr-config active` and your server invocations.
+If it fires once after you edit `prompts/cleanup.txt`, that's expected and self-healing — one ~150 ms cold prefill, then warm again. If it fires every request, two configs are pointed at the same port with different prompts; check `yappr config active` and your server invocations.
 
 ### Model refuses to dictate / outputs "I cannot do that"
 

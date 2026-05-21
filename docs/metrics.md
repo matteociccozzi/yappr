@@ -1,6 +1,6 @@
 # 📊 Metrics
 
-Every `yappr` run appends one line to `$YAPPR_STATE_HOME/metrics/<YYYY-MM>.jsonl`. Use `yappr-stats` to summarize and slice.
+Every `yappr` run appends one line to `$YAPPR_STATE_HOME/metrics/<YYYY-MM>.jsonl`. Use `yappr stats` to summarize and slice.
 
 > Metrics are stored in `$YAPPR_STATE_HOME/metrics/` (default: `~/.local/state/yappr/metrics/`). Override with `YAPPR_METRICS_DIR`.
 
@@ -59,22 +59,22 @@ The streaming refactor changed what `stt_ms` measures:
 
 Rows from before the bump are still in `$YAPPR_STATE_HOME/metrics/*.jsonl`. When A/B-comparing across versions, filter by `config_version` (e.g. `--compare-configs default v3-streaming`) and remember that `stt_ms` numbers from the two regimes are not comparable.
 
-## `yappr-stats` commands
+## `yappr stats` commands
 
 ```bash
-yappr-stats                                       # summary of last 20 runs
-yappr-stats -n 100                                # last N
-yappr-stats --all                                 # all runs
-yappr-stats --since "1 hour ago"                  # also: "today", "yesterday", "2 days ago", ISO ts
-yappr-stats --config v3-streaming                 # filter to one config_version
-yappr-stats --hist llm_ttft_ms                    # ASCII histogram
-yappr-stats --trend llm_ttft_ms                   # ASCII trend chart over recent runs
-yappr-stats --by-config                           # one summary per config_version
-yappr-stats --compare-configs default v3-streaming  # side-by-side A/B
-yappr-stats --compare 2026-05-18T00:00:00Z        # before/after a cutoff
-yappr-stats --raw                                 # dump matching records as JSONL
-yappr-stats --clear                               # archive metrics/ → metrics.bak.<ts>/
-yappr-stats --clear -y                            # same, no confirmation prompt
+yappr stats                                       # summary of last 20 runs
+yappr stats -n 100                                # last N
+yappr stats --all                                 # all runs
+yappr stats --since "1 hour ago"                  # also: "today", "yesterday", "2 days ago", ISO ts
+yappr stats --config v3-streaming                 # filter to one config_version
+yappr stats --hist llm_ttft_ms                    # ASCII histogram
+yappr stats --trend llm_ttft_ms                   # ASCII trend chart over recent runs
+yappr stats --by-config                           # one summary per config_version
+yappr stats --compare-configs default v3-streaming  # side-by-side A/B
+yappr stats --compare 2026-05-18T00:00:00Z        # before/after a cutoff
+yappr stats --raw                                 # dump matching records as JSONL
+yappr stats --clear                               # archive metrics/ → metrics.bak.<ts>/
+yappr stats --clear -y                            # same, no confirmation prompt
 ```
 
 Note: `stt_total_held_ms` is emitted in records but not yet in the summary/hist/trend metric list — pull it via `--raw` for now.
@@ -111,7 +111,7 @@ Computed on the fly, not stored:
 ## A/B comparing two configs
 
 ```bash
-yappr-stats --compare-configs default v3-streaming
+yappr stats --compare-configs default v3-streaming
 ```
 
 Side-by-side summary per `config_version`. Use when verifying a tuning change (model swap, prompt edit, server change) is actually faster — not just feels faster.
@@ -121,7 +121,7 @@ Side-by-side summary per `config_version`. Use when verifying a tuning change (m
 When you edit mid-session, note the time, then later:
 
 ```bash
-yappr-stats --compare 2026-05-19T04:00:00Z
+yappr stats --compare 2026-05-19T04:00:00Z
 ```
 
 Splits records into BEFORE and AFTER the cutoff and prints both summaries.
@@ -129,11 +129,11 @@ Splits records into BEFORE and AFTER the cutoff and prints both summaries.
 ## Raw dump for ad-hoc analysis
 
 ```bash
-yappr-stats --raw                                              # all matching records as JSONL
-yappr-stats --raw --since "today" | jq -s 'map(.stt_total_held_ms) | add/length'
-yappr-stats --raw | duckdb -c "SELECT config_version, AVG(llm_ttft_ms), COUNT(*) FROM read_json_auto('/dev/stdin') GROUP BY 1"
+yappr stats --raw                                              # all matching records as JSONL
+yappr stats --raw --since "today" | jq -s 'map(.stt_total_held_ms) | add/length'
+yappr stats --raw | duckdb -c "SELECT config_version, AVG(llm_ttft_ms), COUNT(*) FROM read_json_auto('/dev/stdin') GROUP BY 1"
 ```
 
 ## Clearing
 
-`yappr-stats --clear` archives `$YAPPR_STATE_HOME/metrics/` to `$YAPPR_STATE_HOME/metrics.bak.<YYYYMMDD-HHMMSS>/` (gitignored) and starts fresh. Useful before A/B-ing a big change.
+`yappr stats --clear` archives `$YAPPR_STATE_HOME/metrics/` to `$YAPPR_STATE_HOME/metrics.bak.<YYYYMMDD-HHMMSS>/` (gitignored) and starts fresh. Useful before A/B-ing a big change.

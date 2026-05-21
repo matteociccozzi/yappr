@@ -4,16 +4,16 @@ Configs are JSON files in `configs/`. `configs/active.json` is an atomic symlink
 
 Configs in `configs/` only describe the **LLM cleanup stage**. The streaming-STT parameters (model, chunk size, HAL buffer) live in the Swift daemon and are intentionally not exposed as config knobs — see [Daemon-side constants](#daemon-side-constants) below.
 
-## The `yappr-config` CLI
+## The `yappr config` CLI
 
 ```bash
-yappr-config list                # show all configs, mark the active one
-yappr-config active              # print active name
-yappr-config use v2-mlx-q4       # atomically switch (symlink swap)
-yappr-config show                # pretty-print active config
-yappr-config show v1-baseline    # pretty-print a specific one
-yappr-config diff default v2-mlx-q4   # normalized diff
-yappr-config path                # print the configs directory
+yappr config list                # show all configs, mark the active one
+yappr config active              # print active name
+yappr config use v2-mlx-q4       # atomically switch (symlink swap)
+yappr config show                # pretty-print active config
+yappr config show v1-baseline    # pretty-print a specific one
+yappr config diff default v2-mlx-q4   # normalized diff
+yappr config path                # print the configs directory
 ```
 
 Example `list` output:
@@ -44,7 +44,7 @@ Active: default
       "chat_template_kwargs": {"enable_thinking": false}
     }
   },
-  "prompt_file": "prompts/cleanup.txt"             // relative to YAPPR_ROOT
+  "prompt_file": "prompts/cleanup.txt"             // resolved: YAPPR_CONFIG_HOME first, then shipped defaults
 }
 ```
 
@@ -91,9 +91,9 @@ Read by `bin/yappr` at call time:
 yappr looks for configs in two places, in order:
 
 1. **User config dir** — `$YAPPR_CONFIG_HOME/configs/` (default: `~/.config/yappr/configs/`)
-2. **Shipped defaults** — `$YAPPR_ROOT/configs/` (inside the cloned repo)
+2. **Shipped defaults** — inside the Homebrew prefix (or `$YAPPR_ROOT/configs/` for source installs)
 
-`install.sh` seeds the user config dir with the shipped defaults on first install. After that, edit files in `$YAPPR_CONFIG_HOME/` without touching the repo.
+`yappr setup` (Homebrew) or `scripts/install.sh` (source) seeds the user config dir with the shipped defaults on first install. After that, edit files in `$YAPPR_CONFIG_HOME/` without touching the installed files.
 
 **Switching configs:**
 ```bash
@@ -106,39 +106,23 @@ yappr config show           # print active config
 
 ## Adding a new config
 
-Drop a new JSON file in `configs/` matching the schema, then switch:
+Drop a new JSON file in `~/.config/yappr/configs/` matching the schema, then switch:
 
 ```bash
-cat > configs/v4-spec-decoding.json <<'EOF'
-{
-  "version": "v4-spec-decoding",
-  "description": "Speculative decoding test (when mlx-lm Qwen3 bug clears)",
-  "backend": "yappr-mlx-server-spec",
-  "llm": {
-    "url": "http://127.0.0.1:8082/v1/chat/completions",
-    "model_name": "mlx-community/Qwen3-1.7B-4bit",
-    "max_tokens": 512,
-    "temperature": 0,
-    "extra_params": {
-      "chat_template_kwargs": {"enable_thinking": false}
-    }
-  },
-  "prompt_file": "prompts/cleanup.txt"
-}
-EOF
-
-yappr-config use v4-spec-decoding
+cp ~/.config/yappr/configs/default.json ~/.config/yappr/configs/v4-spec-decoding.json
+# edit v4-spec-decoding.json
+yappr config use v4-spec-decoding
 ```
 
 Every yappr run now stamps the new `config_version`. A/B compare:
 
 ```bash
-yappr-stats --compare-configs default v4-spec-decoding
+yappr stats --compare-configs default v4-spec-decoding
 ```
 
 ## Active = symlink
 
-`configs/active.json` is a symlink. `yappr-config use NAME` does an atomic `ln -sfn NAME.json active.json`. The rest of yappr (and `yappr-mlx-server` when restarted) just reads `active.json`.
+`~/.config/yappr/configs/active.json` is a symlink. `yappr config use NAME` does an atomic `ln -sfn NAME.json active.json`. The rest of yappr (and `yappr-mlx-server` when restarted) just reads `active.json`.
 
 Point at a config explicitly without changing the symlink:
 

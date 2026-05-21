@@ -10,11 +10,11 @@ All numbers below were measured on an M-series Mac by the author. Reproduce your
 ## Reproducing
 
 ```bash
-yappr-trace --summary --last 10     # per-session phase breakdown
-yappr-stats --since "today"         # mean/p50/p95/max across runs
+yappr trace --summary --last 10     # per-session phase breakdown
+yappr stats --since "today"         # mean/p50/p95/max across runs
 ```
 
-`yappr-trace` reads `/tmp/yappr-trace.log` (events from Hammerspoon, the Swift connector, and the daemon). `yappr-stats` reads `metrics/*.jsonl` (one record per completed dictation).
+`yappr-trace` reads `$YAPPR_RUNTIME_DIR/trace.log` (default: `/tmp/yappr-<uid>/trace.log`) — events from Hammerspoon, the Swift connector, and the daemon. `yappr-stats` reads `$YAPPR_STATE_HOME/metrics/*.jsonl` (one record per completed dictation).
 
 ## STT path — where the time goes
 
@@ -80,9 +80,9 @@ Two regimes to look for:
 To A/B two backends:
 
 ```bash
-yappr-config use v2-mlx-q4    # stock mlx_lm.server
+yappr config use v2-mlx-q4    # stock mlx_lm.server
 diagnostics/yappr-probe-caching 10
-yappr-config use default      # yappr-mlx-server (prefix-cached)
+yappr config use default      # yappr-mlx-server (prefix-cached)
 diagnostics/yappr-probe-caching 10
 ```
 
