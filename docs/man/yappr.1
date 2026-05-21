@@ -1,0 +1,86 @@
+.TH YAPPR 1 "2026-05-20" "yappr 0.1.0" "yappr Manual"
+.SH NAME
+yappr \- local push-to-talk voice dictation for macOS Apple Silicon
+.SH SYNOPSIS
+.B yappr
+[\fIsubcommand\fR] [\fIoptions\fR]
+.SH DESCRIPTION
+.B yappr
+is a low-latency, fully on-device push-to-talk dictation tool for macOS Apple Silicon.
+Hold a hotkey (default: Ctrl+Option+Y via Hammerspoon), speak, and release.
+Cleaned text streams to your cursor character by character.
+.PP
+Audio is captured by a long-running Swift daemon
+.RB ( YapprSttDaemon )
+using AVAudioEngine and transcribed in-process by Nemotron 0.6B via FluidAudio.
+The verbatim transcript is cleaned by Qwen3-1.7B-4bit on a local MLX inference server.
+No audio or text leaves the machine.
+.SH SUBCOMMANDS
+.TP
+.B dictate
+Record speech and type cleaned text at the cursor (default subcommand).
+.TP
+.B daemon \fI<start|stop|restart|status|logs|tail>\fR
+Manage the YapprSttDaemon lifecycle.
+.TP
+.B server \fI<start|stop|restart|status|logs|tail>\fR
+Manage the MLX inference server lifecycle.
+.TP
+.B config \fI<list|active|use|show|diff|delete|path>\fR
+Manage configuration presets stored in \fI~/.config/yappr/configs/\fR.
+.TP
+.B stats
+Show dictation metrics: words transcribed, latency, daily usage.
+.TP
+.B trace
+Render the timing trace from the last dictation session.
+.TP
+.B doctor
+Run 11 post-install health checks. Exits 1 if any check fails.
+.TP
+.B help
+Show full help text. Use \fB\-h\fR for a compact one-screen summary.
+.TP
+.B version
+Print the version string and exit 0.
+.SH ENVIRONMENT
+.TP
+.B YAPPR_ROOT
+Override the repo/source root (auto-detected from the binary location).
+.TP
+.B YAPPR_CONFIG_HOME
+User config directory. Default: \fI~/.config/yappr\fR.
+.TP
+.B YAPPR_STATE_HOME
+State directory for logs and metrics. Default: \fI~/.local/state/yappr\fR.
+.TP
+.B YAPPR_DATA_HOME
+Data directory for build artifacts. Default: \fI~/.local/share/yappr\fR.
+.TP
+.B YAPPR_RUNTIME_DIR
+Runtime directory for the Unix socket and PID file. Default: \fI/tmp/yappr-$(id -u)\fR.
+.TP
+.B YAPPR_QUIET
+Set to \fB1\fR to suppress stderr output (Hammerspoon automation mode).
+.TP
+.B YAPPR_COPY
+Set to \fB1\fR to also copy cleaned text to the macOS clipboard.
+.SH FILES
+.TP
+.I ~/.config/yappr/configs/active.json
+Active configuration preset (symlink to a named config).
+.TP
+.I ~/.local/state/yappr/logs/
+Dictation and daemon logs.
+.TP
+.I /tmp/yappr-<uid>/stt.sock
+Unix domain socket for communicating with YapprSttDaemon.
+.TP
+.I ~/Library/LaunchAgents/com.yappr.daemon.plist
+launchd plist for daemon auto-start at login.
+.SH SEE ALSO
+Full documentation: \fIhttps://github.com/matteociccozzi/yappr/tree/main/docs\fR
+.PP
+\fBhammerspoon\fR(1), \fBswift\fR(1)
+.SH AUTHOR
+Matteo Ciccozzi <matteociccozzi@icloud.com>
