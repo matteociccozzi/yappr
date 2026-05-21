@@ -12,7 +12,7 @@
 ![Qwen3](https://img.shields.io/badge/Qwen3--1.7B--4bit-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
-> 📺 Screen recording placeholder — drop a gif here once you have one.
+> 📺 Demo GIF coming soon — see [docs/installation.md](docs/installation.md) to get started.
 
 ---
 
@@ -151,13 +151,26 @@ I wanted push-to-talk dictation that runs entirely on my laptop — no cloud rou
 - ⛔ **No speculative decoding yet** — there's an [open bug in mlx-lm with the Qwen3 family](https://github.com/ml-explore/mlx-lm/issues/846); revisit later.
 - 👤 **Single-tenant inference server** — one lock, one shared cache. Not a load-balanced production thing.
 - 🧩 **Full-attention models only** — SSM/Mamba/hybrid won't work with the cache primitive.
-- 🧪 **No tests.** Personal tool. Caveat emptor.
+- 🧪 **Test coverage is growing** — BATS CLI tests + Python unit tests run in CI on macOS 15 (`bats tests/bats/`, `pytest tests/python/`).
 
 ---
 
 ## 🙏 Credits
 
 [MLX](https://github.com/ml-explore/mlx) / [mlx-lm](https://github.com/ml-explore/mlx-lm), [FluidAudio](https://github.com/FluidInference/FluidAudio) (streaming Nemotron 0.6B), [Qwen3](https://qwenlm.github.io/), [Hammerspoon](https://www.hammerspoon.org/).
+
+---
+
+## Community
+
+| | |
+|--|--|
+| 🐛 **Bug reports** | [Open an issue](https://github.com/matteociccozzi/yappr/issues/new?template=bug_report.md) |
+| 💡 **Feature requests** | [Open an issue](https://github.com/matteociccozzi/yappr/issues/new?template=feature_request.md) |
+| 🤝 **Contributing** | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| 📋 **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
+| 🛡️ **Security** | [SECURITY.md](SECURITY.md) |
+| ⚖️ **Code of Conduct** | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) |
 
 ---
 
