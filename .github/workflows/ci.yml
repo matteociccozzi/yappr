@@ -43,7 +43,7 @@ jobs:
         run: |
           shellcheck bin/_yappr-paths.sh bin/yappr bin/yappr-dictate \
             bin/yappr-daemon bin/yappr-server bin/yappr-help \
-            scripts/install.sh scripts/migrate-runtime-state.sh \
+            scripts/install.sh scripts/uninstall.sh scripts/migrate-runtime-state.sh \
             scripts/check-no-runtime-writes.sh \
             diagnostics/yappr-probe-caching
 
