@@ -8,6 +8,12 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-05-21
+
+### Added
+- `yappr setup` now installs `mlx-lm` via `uv tool install` in addition to downloading the Nemotron model
+- `uv` added as a Homebrew dependency so it is present after `brew install yappr`
+
 ## [0.1.2] - 2026-05-21
 
 ### Added
