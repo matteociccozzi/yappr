@@ -1,5 +1,15 @@
 # yappr CLI Reference
 
+## yappr setup
+
+```
+yappr setup
+```
+
+One-time post-install setup. Downloads the Nemotron STT model (~200 MB), installs mlx-lm via uv, creates XDG config and state directories, and writes `~/.hammerspoon/init.lua`. Run once after `brew install yappr`.
+
+---
+
 ## yappr dictate
 
 ```
@@ -12,6 +22,7 @@ Requires: STT daemon running (`yappr daemon start`), MLX server running (`yappr 
 
 **Env vars:**
 - `YAPPR_QUIET=1` — suppress intermediate log output (set by Hammerspoon)
+- `YAPPR_COPY=1` — also copy cleaned text to the macOS clipboard
 
 ---
 
@@ -51,7 +62,7 @@ Manage the `YapprSttDaemon` process.
 | `tail` | Follow `$YAPPR_DAEMON_LOG` |
 
 **Paths:**
-- Daemon binary: `~/.local/share/yappr/build/yappr-stt-daemon/release/YapprSttDaemon`
+- Daemon binary: `/opt/homebrew/bin/YapprSttDaemon` (Homebrew) or `~/.local/share/yappr/build/yappr-stt-daemon/release/YapprSttDaemon` (source install)
 - Socket: `$YAPPR_SOCKET` (default: `/tmp/yappr-<uid>/stt.sock`)
 - PID: `$YAPPR_DAEMON_PID` (default: `/tmp/yappr-<uid>/daemon.pid`)
 - Log: `$YAPPR_DAEMON_LOG` (default: `~/.local/state/yappr/logs/daemon.log`)
@@ -127,11 +138,14 @@ Checks: macOS Apple Silicon, required tools on PATH, XDG dirs, active config val
 
 ```
 yappr help
-yappr -h
 yappr --help
+yappr -h
 ```
 
-Print subcommand listing with env var overrides and docs links.
+Print help text.
+
+- `yappr help` / `yappr --help` — full help: all subcommands, examples, env var overrides, and docs links.
+- `yappr -h` — compact one-screen subcommand summary.
 
 ---
 

@@ -20,7 +20,7 @@ yappr resolves `prompt_file` by checking `$YAPPR_CONFIG_HOME/` first, then falli
 `$YAPPR_CONFIG_HOME/prompts/cleanup.txt` is the system prompt the LLM sees on every call. Edit it freely. After saving:
 
 - **Server side**: `yappr-mlx-server` detects the hash mismatch on the next request and rebuilds the cache automatically (~150 ms one-time cold prefill). No restart needed. The `[cache] system prompt changed (got X, had Y) — rebuilding` line appears in the server's stderr.
-- **Metrics**: `prompt_hash` in the JSONL changes. So you can A/B prompt edits with `yappr-stats --compare <iso-ts-before-edit>`.
+- **Metrics**: `prompt_hash` in the JSONL changes. So you can A/B prompt edits with `yappr stats --compare <iso-ts-before-edit>`.
 
 ### What the prompt should do
 
@@ -50,7 +50,7 @@ The cleanup client merges the active config's `llm.extra_params` into the chat-c
 
 ## The hotkey
 
-Change the Hammerspoon binding by editing the `hs.hotkey.bind({"ctrl", "alt"}, "y", ...)` line in `~/.hammerspoon/init.lua`. Modifier list and key follow `hs.hotkey.bind` rules. Avoid the macOS `fn` key — it's not a normal Cocoa modifier and requires `hs.eventtap` instead of `hs.hotkey`, which is fussier. Full init.lua template lives in [`docs/installation.md`](installation.md#hammerspoon-push-to-talk).
+Change the Hammerspoon binding by editing the `hs.hotkey.bind({"ctrl", "alt"}, "y", ...)` line in `~/.hammerspoon/init.lua`. Modifier list and key follow `hs.hotkey.bind` rules. Avoid the macOS `fn` key — it's not a normal Cocoa modifier and requires `hs.eventtap` instead of `hs.hotkey`, which is fussier. The Hammerspoon config is written by `yappr setup`. See [`docs/installation.md`](installation.md) for step-by-step details.
 
 ## The STT model
 
@@ -67,23 +67,29 @@ To change it:
 
 ```bash
 # 1. Edit Daemon.swift — update chunkSize and cacheSubdir.
-# 2. Rebuild.
+# 2. Rebuild (source installs only — Homebrew users cannot rebuild the daemon).
 cd $YAPPR_ROOT/swift/yappr-stt-daemon
-swift build -c release
+swift build -c release --scratch-path ~/.local/share/yappr/build/yappr-stt-daemon
 
 # 3. Re-codesign (TCC keys mic permission to the signature).
 codesign --force --sign - ~/.local/share/yappr/build/yappr-stt-daemon/release/YapprSttDaemon
 
 # 4. Restart the daemon.
-pkill -x YapprSttDaemon
-~/.local/share/yappr/build/yappr-stt-daemon/release/YapprSttDaemon
+yappr daemon stop && yappr daemon start
 ```
 
 The first run after a model change populates `~/.cache/fluidaudio/models/nemotron-streaming/<cacheSubdir>/`; subsequent starts are fast.
 
 ## The cleanup LLM
 
-Point `configs/active.json`'s `llm.model_name` at any other MLX model on Hugging Face, and `llm.url` at whatever serves it. For a local on-device swap, restart `yappr-mlx-server` with the new model:
+Point `~/.config/yappr/configs/active.json`'s `llm.model_name` at any other MLX model on Hugging Face, and `llm.url` at whatever serves it. For a local on-device swap, update your config and restart the server:
+
+```bash
+# Edit the active config to point at the bigger model, then:
+yappr server restart
+```
+
+Or start the server directly for one-off testing:
 
 ```bash
 yappr-mlx-server \
@@ -113,5 +119,5 @@ cp ~/.config/yappr/configs/default.json ~/.config/yappr/configs/v4-qwen-4b.json
 # edit v4-qwen-4b.json to point at the bigger model
 yappr config use v4-qwen-4b
 # dictate a few times, then:
-yappr-stats --compare-configs default v4-qwen-4b
+yappr stats --compare-configs default v4-qwen-4b
 ```

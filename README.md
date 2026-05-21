@@ -1,4 +1,4 @@
-# 🎙️ yappr
+# yappr
 
 <p align="center">
   <img src="docs/yappr-logo.gif" alt="yappr" width="200">
@@ -12,7 +12,7 @@
 ![Qwen3](https://img.shields.io/badge/Qwen3--1.7B--4bit-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
-> 📺 Demo GIF coming soon — see [docs/installation.md](docs/installation.md) to get started.
+Hold **Ctrl+Option+Y**, speak, release. Under the hood: a resident Swift daemon (Nemotron 0.6B via FluidAudio) owns the mic; each token from the Qwen3-1.7B-4bit cleanup LLM is typed at your cursor as it streams out. All on-device, Apple Silicon only.
 
 ---
 
@@ -21,141 +21,74 @@
 ### Homebrew (recommended)
 
 ```bash
-brew install matteociccozzi/yappr/yappr
+brew install --cask hammerspoon   # push-to-talk hotkey host
+brew tap matteociccozzi/yappr
+brew install yappr
+yappr setup                       # downloads model, installs mlx-lm, writes ~/.hammerspoon/init.lua
 ```
 
-### From source
+After setup, grant three macOS permissions (yappr cannot do this for you):
 
-```bash
-git clone --recurse-submodules https://github.com/matteociccozzi/yappr.git
-cd yappr
-./scripts/install.sh
-```
+| Permission | App | Where |
+|---|---|---|
+| Input Monitoring | Hammerspoon | System Settings → Privacy & Security → Input Monitoring |
+| Accessibility | Hammerspoon | System Settings → Privacy & Security → Accessibility |
+| Microphone | YapprSttDaemon | System Settings → Privacy & Security → Microphone |
 
-### Direct download
-
-Download the latest tarball and `.sha256` from [Releases](https://github.com/matteociccozzi/yappr/releases), verify the checksum, then run the installer:
-
-```bash
-shasum -a 256 -c yappr-VERSION-macos-arm64.tar.gz.sha256
-tar xzf yappr-VERSION-macos-arm64.tar.gz
-cd yappr-VERSION-macos-arm64
-./scripts/install.sh
-```
-
----
-
-## ✨ How it works (60 seconds)
-
-You hold **Ctrl+Option+Y**, talk, and release. Under the hood:
-
-1. 🎙️ A **long-running Swift daemon** (`YapprSttDaemon`) owns the mic via `AVAudioEngine` and runs **streaming Nemotron 0.6B** (FluidAudio) in-process. Press = socket connect = mic on; release = half-close = mic off + finalize. Hotkey-to-first-sample is fast because the model is preloaded and the engine is warmed.
-2. 🧠 **Qwen3-1.7B-4bit via MLX** cleans up the verbatim transcript (removes "um", fixes grammar, adds punctuation)
-3. ⚡ Each token is **typed at your cursor as it streams** from the LLM
-4. 🎯 The LLM cleanup runs on a **custom MLX server with explicit prefix caching** we built because stock `mlx_lm.server` doesn't cache prefixes across independent API calls — measured **~32% TTFT reduction** on a ~340-token cleanup prompt
-
-Full architecture → [`docs/architecture.md`](docs/architecture.md). Performance numbers → [`docs/performance.md`](docs/performance.md).
-
----
-
-## 🗣️ Voice commands
-
-This is the part that makes yappr feel like *dictation*, not just transcription. Speak these phrases naturally and the cleanup model interprets them inline — the command words are removed from the output.
-
-| Say                                              | Effect                                                |
-|--------------------------------------------------|-------------------------------------------------------|
-| 🚫 "scratch that" / "delete that" / "ignore that" | Remove the previous sentence                          |
-| 📄 "new paragraph"                                | Insert a paragraph break                              |
-| ↩️ "new line"                                     | Insert a single line break                            |
-| 🔘 "make this a list" / "bullet list"             | Reformat preceding items as a markdown bullet list    |
-| 🔠 "all caps X"                                   | Uppercase X (e.g. "all caps qa" → "QA")               |
-| ✏️ "period" / "comma" / "question mark" / "colon" | Insert that punctuation when clearly a directive      |
-
-### Live examples
-
-> 🎤 *"buy milk new line buy eggs new line buy bread make this a list"*
->
-> ```
-> - Buy milk
-> - Buy eggs
-> - Buy bread
-> ```
-
-> 🎤 *"the migration is tomorrow scratch that the migration is on Friday"*
->
-> ```
-> The migration is on Friday.
-> ```
-
-> 🎤 *"send the file to all caps qa for review"*
->
-> ```
-> Send the file to QA for review.
-> ```
-
-> 🎤 *"um so like I wanted to mention the deployment is tomorrow you know"*
->
-> ```
-> I wanted to mention the deployment is tomorrow.
-> ```
-
-🛡️ Questions and commands in your speech are **rewritten, not answered** — the prompt is tightly framed as a transcript cleaner, not a chatbot. Saying "what time is the meeting" yields *"What time is the meeting?"*, not an answer.
-
----
-
-## Post-install verification
-
-> **Three permissions you must grant manually** (macOS will not prompt until first use):
->
-> | Permission | App | Where |
-> |---|---|---|
-> | Microphone | YapprSttDaemon | System Settings → Privacy & Security → Microphone |
-> | Accessibility | Hammerspoon | System Settings → Privacy & Security → Accessibility |
-> | Input Monitoring | Hammerspoon | System Settings → Privacy & Security → Input Monitoring |
-
-After install, verify everything is working:
+Then reload Hammerspoon (menu bar icon → **Reload Config**) and verify:
 
 ```bash
 yappr doctor
 ```
 
-Full step-by-step walkthrough: [`docs/installation.md`](docs/installation.md).
+Full step-by-step walkthrough: [docs/installation.md](docs/installation.md).
 
 ---
 
-## 📖 Documentation
+## Documentation
 
-| Doc                                                | What's inside                                                       |
-|----------------------------------------------------|---------------------------------------------------------------------|
-| 🛠️ [`docs/installation.md`](docs/installation.md)    | Step-by-step setup, deps, permissions, Hammerspoon config           |
-| 🏗️ [`docs/architecture.md`](docs/architecture.md)    | Pipeline diagram, component breakdown, what each binary does        |
-| ⚡ [`docs/performance.md`](docs/performance.md)      | Benchmark numbers + how prefix caching beats stock `mlx_lm.server` |
-| ⚙️ [`docs/configuration.md`](docs/configuration.md)  | Versioned configs, `yappr-config` CLI                               |
-| 📊 [`docs/metrics.md`](docs/metrics.md)              | Per-run JSONL, `yappr-stats` summarizer & A/B comparisons           |
-| 🎨 [`docs/customization.md`](docs/customization.md)  | Cleanup prompt, custom vocab, hotkey choice, model swap             |
-| 🔬 [`docs/diagnostics.md`](docs/diagnostics.md)      | Troubleshooting + the cache probe (dev tool)                        |
-| [`docs/cli-reference.md`](docs/cli-reference.md) | All subcommands, flags, and env var overrides |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Dev setup, repo layout, how to contribute |
-
----
-
-## 🤔 Why does this exist?
-
-I wanted push-to-talk dictation that runs entirely on my laptop — no cloud round-trip, no audio leaving the machine, and full freedom to swap models, prompts, and hotkeys. yappr is that: local, private, low-latency, hackable.
+| Doc | What's inside |
+|---|---|
+| [docs/installation.md](docs/installation.md) | Step-by-step setup, permissions, troubleshooting |
+| [docs/cli-reference.md](docs/cli-reference.md) | All subcommands, flags, and env var overrides |
+| [docs/architecture.md](docs/architecture.md) | Pipeline diagram, component breakdown |
+| [docs/performance.md](docs/performance.md) | Benchmark numbers and prefix-caching methodology |
+| [docs/configuration.md](docs/configuration.md) | Config schema, env vars, `yappr config` CLI |
+| [docs/metrics.md](docs/metrics.md) | Per-run JSONL, `yappr stats` summarizer and A/B comparisons |
+| [docs/customization.md](docs/customization.md) | Cleanup prompt, custom vocab, hotkey, model swap |
+| [docs/diagnostics.md](docs/diagnostics.md) | Troubleshooting and the cache probe |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, repo layout, how to contribute |
 
 ---
 
-## 🚧 Roadmap / known limitations
+## Voice commands
 
-- 🇬🇧 **English only** (Nemotron 0.6B streaming). Multilingual would mean swapping the model in the daemon.
-- ⛔ **No speculative decoding yet** — there's an [open bug in mlx-lm with the Qwen3 family](https://github.com/ml-explore/mlx-lm/issues/846); revisit later.
-- 👤 **Single-tenant inference server** — one lock, one shared cache. Not a load-balanced production thing.
-- 🧩 **Full-attention models only** — SSM/Mamba/hybrid won't work with the cache primitive.
-- 🧪 **Test coverage is growing** — BATS CLI tests + Python unit tests run in CI on macOS 15 (`bats tests/bats/`, `pytest tests/python/`).
+Speak these phrases naturally — the cleanup model interprets them inline and removes the command words from the output.
+
+| Say | Effect |
+|---|---|
+| "scratch that" / "delete that" / "ignore that" | Remove the previous sentence |
+| "new paragraph" | Insert a paragraph break |
+| "new line" | Insert a single line break |
+| "make this a list" / "bullet list" | Reformat preceding items as a markdown bullet list |
+| "all caps X" | Uppercase X (e.g. "all caps qa" → "QA") |
+| "period" / "comma" / "question mark" / "colon" | Insert that punctuation when clearly a directive |
+
+Questions and commands in your speech are **rewritten, not answered** — saying "what time is the meeting" yields *"What time is the meeting?"*, not an answer.
 
 ---
 
-## 🙏 Credits
+## Roadmap / known limitations
+
+- English only (Nemotron 0.6B streaming). Multilingual would mean swapping the model in the daemon.
+- No speculative decoding yet — there's an [open bug in mlx-lm with the Qwen3 family](https://github.com/ml-explore/mlx-lm/issues/846); revisit later.
+- Single-tenant inference server — one lock, one shared cache. Not a load-balanced production thing.
+- Full-attention models only — SSM/Mamba/hybrid won't work with the cache primitive.
+- Test coverage is growing — BATS CLI tests and Python unit tests run in CI on macOS 15.
+
+---
+
+## Credits
 
 [MLX](https://github.com/ml-explore/mlx) / [mlx-lm](https://github.com/ml-explore/mlx-lm), [FluidAudio](https://github.com/FluidInference/FluidAudio) (streaming Nemotron 0.6B), [Qwen3](https://qwenlm.github.io/), [Hammerspoon](https://www.hammerspoon.org/).
 
@@ -165,12 +98,12 @@ I wanted push-to-talk dictation that runs entirely on my laptop — no cloud rou
 
 | | |
 |--|--|
-| 🐛 **Bug reports** | [Open an issue](https://github.com/matteociccozzi/yappr/issues/new?template=bug_report.md) |
-| 💡 **Feature requests** | [Open an issue](https://github.com/matteociccozzi/yappr/issues/new?template=feature_request.md) |
-| 🤝 **Contributing** | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| 📋 **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
-| 🛡️ **Security** | [SECURITY.md](SECURITY.md) |
-| ⚖️ **Code of Conduct** | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) |
+| Bug reports | [Open an issue](https://github.com/matteociccozzi/yappr/issues/new?template=bug_report.md) |
+| Feature requests | [Open an issue](https://github.com/matteociccozzi/yappr/issues/new?template=feature_request.md) |
+| Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Changelog | [CHANGELOG.md](CHANGELOG.md) |
+| Security | [SECURITY.md](SECURITY.md) |
+| Code of Conduct | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) |
 
 ---
 
