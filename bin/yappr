@@ -12,6 +12,7 @@ case "$CMD" in
   dictate|"")  exec "$HERE/yappr-dictate"  "$@" ;;
   daemon)      exec "$HERE/yappr-daemon"   "$@" ;;
   config)      exec "$HERE/yappr-config"   "$@" ;;
+  setup)       exec "$HERE/yappr-setup"    "$@" ;;
   stats)       exec "$HERE/yappr-stats"    "$@" ;;
   trace)       exec "$HERE/yappr-trace"    "$@" ;;
   doctor)      exec "$HERE/yappr-doctor"   "$@" ;;

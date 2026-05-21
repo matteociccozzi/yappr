@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# yappr-setup — download the Nemotron STT model (~200 MB, one-time).
+# Safe to re-run; exits 0 immediately if the model is already cached.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/_yappr-paths.sh
+source "$HERE/_yappr-paths.sh"
+
+NEMOTRON_CACHE="$HOME/.cache/fluidaudio/models/nemotron-streaming/560ms"
+
+if [[ -f "$NEMOTRON_CACHE/preprocessor.mlmodelc/coremldata.bin" ]]; then
+  echo "yappr setup: Nemotron model already cached at $NEMOTRON_CACHE"
+  exit 0
+fi
+
+# Find fluidaudiocli: Homebrew install puts it beside this script;
+# source installs have it in the build dir.
+FLUIDAUDIOCLI=""
+if [[ -x "$HERE/fluidaudiocli" ]]; then
+  FLUIDAUDIOCLI="$HERE/fluidaudiocli"
+elif [[ -x "$YAPPR_ROOT/vendor/FluidAudio/.build/release/fluidaudiocli" ]]; then
+  FLUIDAUDIOCLI="$YAPPR_ROOT/vendor/FluidAudio/.build/release/fluidaudiocli"
+else
+  echo "yappr setup: fluidaudiocli not found." >&2
+  echo "  If installed from source, run: bash scripts/install.sh" >&2
+  exit 1
+fi
+
+echo "yappr setup: Downloading Nemotron STT model (~200 MB, one-time)…"
+
+WARMUP_WAV="$(mktemp /tmp/yappr-setup-XXXXXX.wav)"
+python3 - <<PY
+import wave, struct
+with wave.open("$WARMUP_WAV", "w") as f:
+    f.setnchannels(1); f.setsampwidth(2); f.setframerate(16000)
+    f.writeframes(struct.pack("<" + "h" * 16000, *([0] * 16000)))
+PY
+
+"$FLUIDAUDIOCLI" nemotron-transcribe --input "$WARMUP_WAV" --chunk 560 >/dev/null 2>&1 || true
+rm -f "$WARMUP_WAV"
+
+if [[ -f "$NEMOTRON_CACHE/preprocessor.mlmodelc/coremldata.bin" ]]; then
+  echo "yappr setup: Nemotron model cached successfully."
+else
+  echo "yappr setup: model download failed." >&2
+  echo "  Run manually: $FLUIDAUDIOCLI nemotron-transcribe --input <any.wav> --chunk 560" >&2
+  exit 1
+fi

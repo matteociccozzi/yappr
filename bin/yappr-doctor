@@ -129,7 +129,7 @@ nemotron = Path.home() / ".cache/fluidaudio/models/nemotron-streaming/560ms/prep
 if nemotron.exists():
     ok(f"Nemotron model cache: {nemotron.parent.parent}")
 else:
-    fail(f"Nemotron model cache missing: {nemotron.parent}  →  re-run scripts/install.sh")
+    fail(f"Nemotron model cache missing: {nemotron.parent}  →  run: yappr setup")
 
 # 10. Hammerspoon
 hs_app = Path("/Applications/Hammerspoon.app")

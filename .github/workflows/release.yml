@@ -31,6 +31,9 @@ jobs:
           cd swift/yappr-stt-daemon
           swift build -c release \
             --scratch-path "$RUNNER_TEMP/build/yappr-stt-daemon"
+          cd "$GITHUB_WORKSPACE/vendor/FluidAudio"
+          swift build -c release --product fluidaudiocli \
+            --scratch-path "$RUNNER_TEMP/build/fluidaudio"
 
       - name: Ad-hoc codesign
         run: |
@@ -38,6 +41,8 @@ jobs:
             "$RUNNER_TEMP/build/yappr-stt-daemon/release/YapprSttDaemon"
           codesign --force --sign - \
             "$RUNNER_TEMP/build/yappr-stt-daemon/release/YapprSttConnect"
+          codesign --force --sign - \
+            "$RUNNER_TEMP/build/fluidaudio/release/fluidaudiocli"
 
       - name: Bundle tarball
         run: |
@@ -48,11 +53,12 @@ jobs:
              bin/yappr bin/yappr-config bin/yappr-daemon bin/yappr-dictate \
              bin/yappr-doctor bin/yappr-help bin/yappr-llm-call \
              bin/yappr-mlx-server bin/yappr-mlx-server.py \
-             bin/yappr-server bin/yappr-stats bin/yappr-trace \
+             bin/yappr-server bin/yappr-setup bin/yappr-stats bin/yappr-trace \
              "$DIST/bin/"
           # Pre-built Swift binaries (already codesigned above)
           cp "$RUNNER_TEMP/build/yappr-stt-daemon/release/YapprSttDaemon" "$DIST/bin/"
           cp "$RUNNER_TEMP/build/yappr-stt-daemon/release/YapprSttConnect" "$DIST/bin/"
+          cp "$RUNNER_TEMP/build/fluidaudio/release/fluidaudiocli" "$DIST/bin/"
           # Supporting directories
           cp -r configs prompts completions scripts docs "$DIST/"
           # Root files (CHANGELOG.md optional — present after Tier 3)

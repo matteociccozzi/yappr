@@ -8,6 +8,15 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-05-21
+
+### Added
+- `yappr setup` subcommand — downloads Nemotron STT model (~200 MB, one-time); works for both Homebrew and source installs
+- `fluidaudiocli` included in release tarball so `yappr setup` works without the git repo
+
+### Fixed
+- `yappr doctor` now points to `yappr setup` instead of `scripts/install.sh`
+
 ## [0.1.1] - 2026-05-21
 
 ### Fixed
