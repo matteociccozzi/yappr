@@ -159,7 +159,7 @@ EXTRA_PARAMS=$(jq -c '.llm.extra_params // {}' "$YAPPR_CONFIG")
 CONFIG_VERSION=$(jq -r '.version' "$YAPPR_CONFIG")
 CONFIG_HASH=$(jq -cS . "$YAPPR_CONFIG" | shasum -a 256 | awk '{print substr($1,1,12)}')
 
-PROMPT_FILE="$YAPPR_ROOT/$(jq -r '.prompt_file' "$YAPPR_CONFIG")"
+PROMPT_FILE="$YAPPR_SHARE/$(jq -r '.prompt_file' "$YAPPR_CONFIG")"
 PROMPT_HASH=$(shasum -a 256 "$PROMPT_FILE" 2>/dev/null | awk '{print substr($1,1,12)}')
 
 LOG_FILE="$(yappr_log_path)"

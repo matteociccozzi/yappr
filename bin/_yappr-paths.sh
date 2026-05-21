@@ -7,6 +7,15 @@
 YAPPR_ROOT="${YAPPR_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 export YAPPR_ROOT
 
+# Asset root: Homebrew installs place configs/prompts/scripts in share/yappr/
+# rather than at the repo root. YAPPR_SHARE points to whichever exists.
+if [[ -d "$YAPPR_ROOT/share/yappr" ]]; then
+  YAPPR_SHARE="$YAPPR_ROOT/share/yappr"
+else
+  YAPPR_SHARE="$YAPPR_ROOT"
+fi
+export YAPPR_SHARE
+
 # XDG-based dirs (macOS-compatible defaults)
 YAPPR_CONFIG_HOME="${YAPPR_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/yappr}"
 YAPPR_DATA_HOME="${YAPPR_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/yappr}"
@@ -22,10 +31,10 @@ YAPPR_DAEMON_LOG="${YAPPR_DAEMON_LOG:-$YAPPR_STATE_HOME/logs/daemon.log}"
 YAPPR_DAEMON_PID="${YAPPR_DAEMON_PID:-$YAPPR_RUNTIME_DIR/daemon.pid}"
 export YAPPR_SOCKET YAPPR_TRACE_LOG YAPPR_DAEMON_LOG YAPPR_DAEMON_PID
 
-# Config resolution: user dir first, repo shipped defaults second
+# Config resolution: user dir first, shipped defaults second
 YAPPR_CONFIG="${YAPPR_CONFIG:-$YAPPR_CONFIG_HOME/configs/active.json}"
 if [[ ! -f "$YAPPR_CONFIG" ]]; then
-  YAPPR_CONFIG="$YAPPR_ROOT/configs/active.json"
+  YAPPR_CONFIG="$YAPPR_SHARE/configs/active.json"
 fi
 export YAPPR_CONFIG
 

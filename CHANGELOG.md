@@ -8,6 +8,12 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-05-21
+
+### Fixed
+- Homebrew install: introduce `YAPPR_SHARE` so configs, prompts, and scripts are found in `share/yappr/` instead of the Homebrew prefix root
+- `yappr-server` and `yappr-dictate` now use `YAPPR_SHARE` for prompt file resolution
+
 ## [0.1.3] - 2026-05-21
 
 ### Added
