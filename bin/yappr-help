@@ -18,6 +18,8 @@ USAGE
 
 SUBCOMMANDS
   dictate            Record speech and type cleaned text at cursor (default)
+  start              Start daemon then server (convenience)
+  stop               Stop server then daemon (convenience)
   daemon <op>        Manage STT daemon   (start|stop|restart|status|logs|tail)
   server <op>        Manage MLX server   (start|stop|restart|status|logs|tail)
   config <op>        Manage configs      (list|active|use|show|diff|delete|path)
@@ -43,10 +45,12 @@ DAILY USE
   yappr trace      Show timing trace from last session
 
 DAEMON & SERVER
+  yappr start      Start daemon then server (sequential, daemon-first)
+  yappr stop       Stop server then daemon (sequential, server-first)
   yappr daemon start|stop|restart|status|logs|tail
-                   Manage the Nemotron STT daemon (YapprSttDaemon)
+                   Manage the Nemotron STT daemon (YapprSttDaemon) individually
   yappr server start|stop|restart|status|logs|tail
-                   Manage the MLX inference server (Qwen3-1.7B-4bit)
+                   Manage the MLX inference server (Qwen3-1.7B-4bit) individually
 
 CONFIGURATION
   yappr config list           List available configs in ~/.config/yappr/configs/
@@ -65,7 +69,7 @@ OTHER
 
 EXAMPLES
   # Start everything and verify health
-  yappr daemon start && yappr server start && yappr doctor
+  yappr start && yappr doctor
 
   # Switch to a different LLM config and confirm it loaded
   yappr config list

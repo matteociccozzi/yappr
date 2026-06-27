@@ -17,6 +17,10 @@ case "$CMD" in
   trace)       exec "$HERE/yappr-trace"    "$@" ;;
   doctor)      exec "$HERE/yappr-doctor"   "$@" ;;
   server)      exec "$HERE/yappr-server"   "$@" ;;
+  start)
+    "$HERE/yappr-daemon" start && "$HERE/yappr-server" start ;;
+  stop)
+    "$HERE/yappr-server" stop && "$HERE/yappr-daemon" stop ;;
   help|--help)    exec "$HERE/yappr-help" --full ;;
   -h)             exec "$HERE/yappr-help" --short ;;
   version|--version|-V)

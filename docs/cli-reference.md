@@ -90,6 +90,28 @@ Model, port, and prompt file are read from the active config JSON (`llm.model`, 
 
 ---
 
+## yappr start
+
+```
+yappr start
+```
+
+Convenience command: starts the STT daemon then the MLX inference server in sequence. Equivalent to `yappr daemon start && yappr server start`.
+
+If the daemon fails to start, the server is not started and `yappr start` exits non-zero.
+
+---
+
+## yappr stop
+
+```
+yappr stop
+```
+
+Convenience command: stops the MLX inference server then the STT daemon in sequence. Equivalent to `yappr server stop && yappr daemon stop`.
+
+---
+
 ## yappr stats
 
 ```

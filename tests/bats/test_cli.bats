@@ -88,3 +88,27 @@ load "test_helper"
   full="${output}"
   [ "${#short}" -lt "${#full}" ]
 }
+
+@test "yappr start is a recognized subcommand" {
+  run "$YAPPR_BIN" start
+  [ "$status" -ne 2 ]
+  [[ "$output" != *"unknown subcommand"* ]]
+}
+
+@test "yappr stop is a recognized subcommand" {
+  run "$YAPPR_BIN" stop
+  [ "$status" -ne 2 ]
+  [[ "$output" != *"unknown subcommand"* ]]
+}
+
+@test "yappr --help output mentions 'start'" {
+  run "$YAPPR_BIN" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"start"* ]]
+}
+
+@test "yappr -h output mentions 'start'" {
+  run "$YAPPR_BIN" -h
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"start"* ]]
+}
