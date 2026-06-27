@@ -70,14 +70,14 @@ yappr daemon start
 If you miss the prompt, add it manually:
 **System Settings → Privacy & Security → Microphone → add YapprSttDaemon**
 
-### 5. Reload Hammerspoon and start the server
+### 5. Reload Hammerspoon and start the daemon and server
 
 Click the **Hammerspoon menu bar icon → Reload Config**.
 
 You should see a "yappr loaded" toast. Then:
 
 ```bash
-yappr server start
+yappr start
 ```
 
 ### 6. Verify
@@ -141,13 +141,15 @@ spec. Every path is overridable via its env var.
 
 ---
 
-## Running the daemon
+## Running the daemon and server
 
 ```bash
-yappr daemon start    # start in background
-yappr daemon status   # check if running
-yappr daemon stop     # stop
-yappr daemon logs     # view log
+yappr start           # start daemon and server
+yappr daemon status   # check daemon status
+yappr server status   # check server status
+yappr stop            # stop server and daemon
+yappr daemon logs     # view daemon log
+yappr server logs     # view server log
 ```
 
 ---
