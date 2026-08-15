@@ -43,11 +43,11 @@ Each `daemon_*` event shows the µs offset within the session.
 
 Stock `mlx_lm.server` ([open issue #1178](https://github.com/ml-explore/mlx-lm/issues/1178)) doesn't reuse KV state across independent OpenAI-style requests. Every cleanup call re-prefills the same ~340-token system prompt. `bin/yappr-mlx-server` does this differently:
 
-- **At startup**: tokenize the system prompt (N tokens), build `make_prompt_cache(model)`, run one forward pass, `mx.eval(...)` to force materialization. Remember `N` and `hash(system_prompt)`.
+- **At startup**: tokenize the system prompt (N tokens), build `make_prompt_cache(model)`, run one forward pass, `mx.eval(...)` to force materialization. Remember `N`, `hash(system_prompt)`, and the token list itself.
 - **Per request**: hash the incoming system message.
   - Match → walk each cache layer and set `kvc.offset = N`. Tensor allocations stay; the model only reads up to `offset`, so prior generation state is effectively gone.
   - Mismatch (prompt file edited without server restart) → rebuild from scratch, pay one cold prefill, warm again afterwards.
-- **Generation**: tokenize the full conversation, slice off the first N tokens (cached), pass only the suffix to `stream_generate(..., prompt_cache=master_cache)`.
+- **Generation (fast path)**: for the common single-turn `[system, user]` request shape, the system prompt's ~340 tokens are never re-tokenized. On first use per `(system-prompt hash, chat_template_kwargs)` combo, the server derives the literal wrapper text the chat template puts around a user turn (`pre` + content + `post`) and validates it token-for-token against `apply_chat_template` on several probe messages before trusting it. After that, each request just does `tokenizer.encode(pre + user_content + post)` — a few dozen characters instead of the ~1500-character system prompt. Falls back to the slow path (full `apply_chat_template` over all messages, sliced at `N`) for multi-turn requests or if a template ever fails validation — this is purely an optimization, never required for correctness. `/health` exposes `fast_path_hits` / `fast_path_misses`.
 
 A `threading.Lock` serializes requests against the shared mutable cache — this server is single-tenant by design. `/health` exposes `cold_prefills` and `warm_requests` counters.
 

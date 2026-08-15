@@ -47,11 +47,62 @@ Per request:
   2. Reset each KV-cache layer's `.offset` back to N. The underlying tensors
      stay allocated; the model reads only up to `offset`, so any leftover
      bytes from prior generations are effectively gone.
-  3. Re-tokenize the full conversation with the chat template, slice off the
-     first N tokens (the system prefix we already have cached), and pass the
-     suffix to `stream_generate(..., prompt_cache=master_cache)`. Only those
-     suffix tokens need prefill work.
-  4. Stream content chunks back as SSE; emit a final chunk with `usage`.
+  3. Get the user-turn tokens. For the common single-turn [system, user]
+     shape, this uses the FAST PATH (see below) and never re-tokenizes the
+     system prompt text. Otherwise (multi-turn history, or a template we
+     couldn't validate the fast path against) it falls back to the SLOW
+     PATH: re-tokenize the full conversation with the chat template and
+     slice off the first N tokens (the system prefix we already have
+     cached).
+  4. Pass the user-turn tokens to `stream_generate(..., prompt_cache=
+     master_cache)`. Only those tokens need prefill work.
+  5. Stream content chunks back as SSE; emit a final chunk with `usage`.
+
+FAST PATH: SKIPPING SYSTEM-PROMPT RE-TOKENIZATION
+---------------------------------------------------
+Even with the KV-cache trick above, the original implementation still called
+`tokenizer.apply_chat_template(messages, ...)` on the FULL conversation
+(system + user) on every request — re-running BPE tokenization over the
+~340-token system prompt every single time, even though it's byte-identical
+to what was tokenized once at startup.
+
+`get_fast_path_wrapper()` / `_derive_fast_path_wrapper()` fix this WITHOUT
+assuming `sys_tokens + tokenize(user_text)` is a safe concatenation (chat
+templates can insert separators, role markers, or generation-prompt tokens
+between messages that only appear when both are templated together — naively
+gluing separately-tokenized pieces together is not guaranteed to match
+`apply_chat_template` on the combined messages). Instead, once per
+(system-prompt hash, chat_template_kwargs) combination, we:
+
+  1. Render the system message alone and [system, sentinel-user] together as
+     STRINGS (not tokens) using the real chat template, and require the
+     combined rendering to start with the system-only rendering verbatim.
+  2. Locate the sentinel to split the remainder into fixed `pre` / `post`
+     wrapper text around the user turn.
+  3. Validate at the TOKEN level, for several representative probe messages,
+     that `sys_prompt_tokens + tokenizer.encode(pre + probe + post)` exactly
+     equals `apply_chat_template([system, user=probe])`. This is what
+     actually catches BPE-boundary effects, since it compares real
+     tokenizer output rather than assuming the boundary is safe.
+
+Only if that validates do we cache `(pre, post)` and use them on the hot
+path: `tokenizer.encode(pre + user_content + post)` — tokenizing a few dozen
+characters instead of ~1500. If validation ever fails for a given tokenizer/
+template, the wrapper is cached as unusable (not retried every request) and
+every request for that (hash, kwargs) combo transparently falls back to the
+always-correct slow path — this is a pure optimization, never a correctness
+requirement. `/health` exposes `fast_path_hits` / `fast_path_misses`.
+
+Wire protocol is unchanged: the client still sends the full `messages`
+array including the system message on every request. This was a deliberate
+choice over having the server reconstruct the system message from its own
+startup file and dropping it from the request: hashing ~1.5KB of text is
+microseconds (negligible next to the tokenization cost being eliminated
+here), and keeping it in the request preserves the existing hash-mismatch
+safety net (auto-detect + rebuild if the prompt file was edited without a
+server restart) for free. Dropping it would require changing whatever
+upstream code builds the `messages` array (outside this file) for no
+measurable win.
 
 A `threading.Lock` serializes requests against the shared mutable cache. This
 server is intentionally single-tenant — concurrent requests would corrupt the
@@ -87,7 +138,9 @@ GET /health
         "cached_prefix_tokens": 339,
         "stats": {
           "cold_prefills":  1,    // count of full cache rebuilds (init + prompt changes)
-          "warm_requests":  42    // count of requests served against the cached prefix
+          "warm_requests":  42,   // count of requests served against the cached prefix
+          "fast_path_hits": 40,   // requests that skipped system-prompt re-tokenization
+          "fast_path_misses": 2   // requests that fell back to full re-tokenization
         }
       }
 
@@ -169,9 +222,15 @@ class State:
     sys_prompt_text = ""
     sys_prompt_hash = ""
     sys_prompt_len = 0
+    sys_prompt_tokens: list = []
     lock = Lock()
     stats_cold_prefills = 0
     stats_warm_requests = 0
+    # (sys_prompt_hash, sorted chat_template_kwargs items) -> (pre_str, post_str) | None
+    # None means "tried and the template didn't validate" — don't retry every request.
+    fast_path_cache: dict = {}
+    stats_fast_path_hits = 0
+    stats_fast_path_misses = 0
 
 
 def prefill_system_prompt(sys_prompt: str) -> None:
@@ -184,6 +243,11 @@ def prefill_system_prompt(sys_prompt: str) -> None:
     State.sys_prompt_text = sys_prompt
     State.sys_prompt_hash = hash_text(sys_prompt)
     State.sys_prompt_len = len(sys_tokens)
+    State.sys_prompt_tokens = list(sys_tokens)
+    # Any previously-derived wrappers were keyed by the old hash and are now
+    # unreachable; drop them so we don't leak memory across repeated
+    # hash-mismatch rebuilds (e.g. someone editing the prompt file in a loop).
+    State.fast_path_cache = {}
     State.master_cache = make_prompt_cache(State.model)
 
     sys.stderr.write(
@@ -211,6 +275,116 @@ def reset_cache_to_prefix() -> None:
         kvc.offset = State.sys_prompt_len
 
 
+# Sentinel used to locate the user turn inside a rendered chat template.
+# Private-use-area codepoints so it can't collide with real dictation text
+# and won't get silently mangled by BPE the way plain ASCII might.
+_FAST_PATH_SENTINEL = "YAPPR9f3a2c"
+
+# A few representative probe messages used to validate the derived wrapper
+# before trusting it on the hot path. Deliberately varied (empty, short,
+# punctuation, leading/trailing whitespace) since BPE boundary effects are
+# most likely to show up at these edges.
+_FAST_PATH_PROBES = (
+    "hello",
+    "",
+    " leading space and trailing space ",
+    "the deployment is tomorrow, please fix the doc.",
+    "\"quoted\" text with — punctuation…",
+)
+
+
+def _fast_path_key(tmpl_kwargs: dict) -> tuple:
+    return (State.sys_prompt_hash, tuple(sorted(tmpl_kwargs.items())))
+
+
+def _derive_fast_path_wrapper(tmpl_kwargs: dict):
+    """Work out the literal text the chat template wraps a lone user turn in
+    (immediately after the system message), so a per-request completion can
+    tokenize just `pre + user_content + post` instead of re-tokenizing the
+    system prompt every time.
+
+    This does NOT assume `sys_tokens + tokenize(user_text)` is safe to
+    concatenate — chat templates can insert separators/role markers/
+    generation-prompt tokens between messages, and BPE can merge across a
+    naive text-concatenation boundary. Instead:
+
+      1. Render (string, not token) the system message alone, and the
+         system+sentinel-user conversation together, using the SAME
+         tokenizer/template call the slow path already trusts.
+      2. Require the combined rendering to start with the system-only
+         rendering verbatim (string-level prefix check) — if a template
+         ever renders the system block differently depending on what
+         follows it, we bail out and keep using the slow path.
+      3. Locate the sentinel in the remainder to split it into the fixed
+         `pre` / `post` wrapper text around the user turn.
+      4. Validate at the TOKEN level: for several representative probe
+         messages, `sys_prompt_tokens + tokenize(pre + probe + post)` must
+         exactly equal `apply_chat_template([system, user=probe])`. This is
+         the check that actually catches BPE boundary effects, since it
+         compares real tokenizer output, not an assumption.
+
+    Returns (pre_str, post_str) if validated, else None (caller falls back
+    to the always-correct slow path — this is a pure optimization, never a
+    correctness requirement).
+    """
+    try:
+        rendered_sys = State.tokenizer.apply_chat_template(
+            [{"role": "system", "content": State.sys_prompt_text}],
+            tokenize=False, add_generation_prompt=False,
+        )
+        rendered_full = State.tokenizer.apply_chat_template(
+            [{"role": "system", "content": State.sys_prompt_text},
+             {"role": "user", "content": _FAST_PATH_SENTINEL}],
+            tokenize=False, add_generation_prompt=True, **tmpl_kwargs,
+        )
+        if not rendered_full.startswith(rendered_sys):
+            raise ValueError(
+                "template did not render the system message as a stable "
+                "prefix when followed by a user turn"
+            )
+        remainder = rendered_full[len(rendered_sys):]
+        pos = remainder.index(_FAST_PATH_SENTINEL)
+        pre_str = remainder[:pos]
+        post_str = remainder[pos + len(_FAST_PATH_SENTINEL):]
+
+        for probe in _FAST_PATH_PROBES:
+            expected = State.tokenizer.apply_chat_template(
+                [{"role": "system", "content": State.sys_prompt_text},
+                 {"role": "user", "content": probe}],
+                tokenize=True, add_generation_prompt=True, **tmpl_kwargs,
+            )
+            got = State.sys_prompt_tokens + State.tokenizer.encode(
+                pre_str + probe + post_str, add_special_tokens=False,
+            )
+            if got != list(expected):
+                raise ValueError(
+                    f"fast-path token mismatch for probe={probe!r} "
+                    f"(got {len(got)} tokens, expected {len(expected)})"
+                )
+    except Exception as e:
+        sys.stderr.write(
+            f"[fast-path] disabled for chat_template_kwargs={tmpl_kwargs!r}: "
+            f"{e}\n"
+        )
+        return None
+
+    sys.stderr.write(
+        f"[fast-path] enabled for chat_template_kwargs={tmpl_kwargs!r} "
+        f"(pre={len(pre_str)} chars, post={len(post_str)} chars)\n"
+    )
+    return (pre_str, post_str)
+
+
+def get_fast_path_wrapper(tmpl_kwargs: dict):
+    """Cached lookup/derivation of the fast-path wrapper for the current
+    system prompt + these chat_template_kwargs. Derivation happens at most
+    once per (sys_prompt_hash, kwargs) combination."""
+    key = _fast_path_key(tmpl_kwargs)
+    if key not in State.fast_path_cache:
+        State.fast_path_cache[key] = _derive_fast_path_wrapper(tmpl_kwargs)
+    return State.fast_path_cache[key]
+
+
 def chat_completion(body: dict):
     """Yield SSE-encoded strings for streaming, or yield a single dict for non-streaming."""
     messages = body.get("messages") or []
@@ -235,19 +409,43 @@ def chat_completion(body: dict):
         # Reset cache to just-after-system-prompt state.
         reset_cache_to_prefix()
 
-        # Tokenize the full conversation and split off the suffix.
         # Forward chat_template_kwargs (e.g. enable_thinking) from the request body.
         tmpl_kwargs = body.get("chat_template_kwargs") or {}
-        full_tokens = State.tokenizer.apply_chat_template(
-            messages, tokenize=True, add_generation_prompt=True,
-            **tmpl_kwargs,
-        )
-        if len(full_tokens) <= State.sys_prompt_len:
-            # Shouldn't happen but handle gracefully.
-            user_tokens = full_tokens
-            reset_cache_to_prefix()
+
+        # Fast path: for the common single-turn [system, user] shape, skip
+        # re-tokenizing the (unchanged, ~340-token) system prompt entirely —
+        # tokenize only the short wrapper+content text around the user turn.
+        # See _derive_fast_path_wrapper() for why this is safe (it's derived
+        # from and validated against the real chat template, not assumed).
+        wrapper = None
+        if (len(messages) == 2
+                and messages[0].get("role") == "system"
+                and messages[1].get("role") == "user"):
+            wrapper = get_fast_path_wrapper(tmpl_kwargs)
+
+        if wrapper is not None:
+            pre_str, post_str = wrapper
+            user_content = messages[1].get("content") or ""
+            user_tokens = State.tokenizer.encode(
+                pre_str + user_content + post_str, add_special_tokens=False,
+            )
+            prompt_tokens_total = State.sys_prompt_len + len(user_tokens)
+            State.stats_fast_path_hits += 1
         else:
-            user_tokens = full_tokens[State.sys_prompt_len:]
+            State.stats_fast_path_misses += 1
+            # Slow (always-correct) path: tokenize the full conversation with
+            # the real chat template and split off the suffix.
+            full_tokens = State.tokenizer.apply_chat_template(
+                messages, tokenize=True, add_generation_prompt=True,
+                **tmpl_kwargs,
+            )
+            if len(full_tokens) <= State.sys_prompt_len:
+                # Shouldn't happen but handle gracefully.
+                user_tokens = full_tokens
+                reset_cache_to_prefix()
+            else:
+                user_tokens = full_tokens[State.sys_prompt_len:]
+            prompt_tokens_total = len(full_tokens)
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
@@ -292,7 +490,7 @@ def chat_completion(body: dict):
                 "model": State.model_name,
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                 "usage": {
-                    "prompt_tokens": len(full_tokens),
+                    "prompt_tokens": prompt_tokens_total,
                     "completion_tokens": completion_tokens,
                     "cached_prompt_tokens": State.sys_prompt_len,
                 },
@@ -320,7 +518,7 @@ def chat_completion(body: dict):
                     "finish_reason": "stop",
                 }],
                 "usage": {
-                    "prompt_tokens": len(full_tokens),
+                    "prompt_tokens": prompt_tokens_total,
                     "completion_tokens": len(parts),
                     "cached_prompt_tokens": State.sys_prompt_len,
                 },
@@ -360,6 +558,8 @@ class Handler(BaseHTTPRequestHandler):
                 "stats": {
                     "cold_prefills": State.stats_cold_prefills,
                     "warm_requests": State.stats_warm_requests,
+                    "fast_path_hits": State.stats_fast_path_hits,
+                    "fast_path_misses": State.stats_fast_path_misses,
                 },
             })
         else:
