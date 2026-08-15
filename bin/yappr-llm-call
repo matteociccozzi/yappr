@@ -77,6 +77,17 @@ ASSUMPTIONS / LIMITATIONS
     only meaningful with streaming responses.
   * Only one choice (choices[0]) is processed. Multi-choice responses are not
     supported (they don't make sense for our single-user cleanup use case).
+  * `body.messages` should still include the system message on every call,
+    even though it never changes and `bin/yappr-mlx-server` prefills/caches
+    it at startup. This is deliberate, not an oversight: the server hashes
+    the incoming system message (cheap — SHA-256 over ~1.5KB) to (a) skip
+    re-tokenizing it via a fast path when it matches what's cached, and
+    (b) auto-detect + rebuild the cache if the prompt file was edited
+    without a server restart. Dropping it from the wire protocol would
+    remove that safety net for a saving (a text hash) that's already
+    negligible next to the tokenization cost it enables skipping — not
+    worth the protocol change or the coordination with whatever builds
+    `body.messages` upstream of this helper.
 
 EXAMPLE
 -------

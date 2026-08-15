@@ -1,0 +1,18 @@
+# Ruff configuration for yappr.
+#
+# This pins the lint rule set on purpose. The project historically relied on
+# ruff's *default* rules (there was no config file). ruff 0.16.3 broadened its
+# defaults to also enable the I / S / BLE / PL / RUF / B / UP families, which
+# immediately turned CI on `main` (last green 2026-06-27) red by flagging
+# pre-existing, intentionally-accepted patterns — e.g. the broad
+# `except Exception` guards at the HTTP boundary in bin/yappr-mlx-server.py,
+# and `subprocess.run(...)` calls in diagnostics that explicitly inspect exit
+# codes.
+#
+# E4 / E7 / E9 / F is ruff's long-standing default and the set the project was
+# green under. Pinning it here keeps CI deterministic across ruff upgrades
+# instead of breaking whenever ruff expands its defaults. If stricter rules are
+# wanted later, tighten this list and fix the handful of offenders they would
+# then surface.
+[lint]
+select = ["E4", "E7", "E9", "F"]
