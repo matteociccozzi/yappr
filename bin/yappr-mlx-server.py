@@ -203,6 +203,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Lock
+from typing import ClassVar
 
 import mlx.core as mx
 from mlx_lm import load, stream_generate
@@ -222,13 +223,13 @@ class State:
     sys_prompt_text = ""
     sys_prompt_hash = ""
     sys_prompt_len = 0
-    sys_prompt_tokens: list = []
+    sys_prompt_tokens: ClassVar[list] = []
     lock = Lock()
     stats_cold_prefills = 0
     stats_warm_requests = 0
     # (sys_prompt_hash, sorted chat_template_kwargs items) -> (pre_str, post_str) | None
     # None means "tried and the template didn't validate" — don't retry every request.
-    fast_path_cache: dict = {}
+    fast_path_cache: ClassVar[dict] = {}
     stats_fast_path_hits = 0
     stats_fast_path_misses = 0
 
